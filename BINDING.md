@@ -1,14 +1,16 @@
 # Binding any agent / model to the Computer Runtime
 
-Inference stays **outside** this project. Your agent leases a desktop, loops (screenshot → model → action), then soft-releases (or recycles when the job is done).
+Inference stays **outside** this project. Your agent leases a seat, loops (screenshot → model → action), then soft-releases (or recycles when the job is done).
 
-Default display: **1280×800**. Gateway: `http://localhost:9000` (Compose).
+Default display (desktop): **1280×800**. Gateway: `http://localhost:9000` (Compose).
+
+Seat **kind** (inventory JSON via `WORKER_INVENTORY_PATH`): `desktop` (default) or `phone`. `POST /v1/sessions` body field `kind` selects the pool; omit it for desktop. Lease response includes `kind` and `seat_id`.
 
 ## Lease vs park vs recycle
 
 | Concept | What it means |
 |---------|----------------|
-| **Lease** | Exclusive mouse/keyboard claim on a worker (`POST /v1/sessions`). |
+| **Lease** | Exclusive input claim on a worker (`POST /v1/sessions`, optional `kind`). |
 | **Park** | Soft `DELETE` — drop the claim, **keep Firefox warm** for the same `session_id` / `job_id`. Worker is not free for other jobs. |
 | **Acquire / reattach** | Take the claim again: `POST …/acquire` (by `session_id`) or `POST /v1/sessions` with the same `job_id`. |
 | **Recycle** | Wipe Firefox and free the worker: `DELETE …?recycle=true` or `POST …/recycle`. Also happens after parked idle (`PARKED_TTL_SEC`, default 1800s). |
@@ -28,14 +30,14 @@ export AUTH="Authorization: Bearer $COMPUTER_API_TOKEN"
 ## 2. Lease → act → soft release
 
 ```bash
-# Lease
+# Lease (kind defaults to desktop; use "phone" when a phone seat exists)
 SESSION=$(curl -s -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"agent_id":"demo","job_id":"demo-job","ttl_sec":600}' \
+  -d '{"agent_id":"demo","job_id":"demo-job","ttl_sec":600,"kind":"desktop"}' \
   "$GW/v1/sessions")
 echo "$SESSION" | jq .
 SID=$(echo "$SESSION" | jq -r .session_id)
 VNC=$(echo "$SESSION" | jq -r .vnc_url)
-echo "Watch: $VNC"
+echo "Watch: $VNC kind=$(echo "$SESSION" | jq -r .kind) seat=$(echo "$SESSION" | jq -r .seat_id)"
 
 # Screenshot (base64 PNG in .image)
 curl -s -H "$AUTH" "$GW/v1/sessions/$SID/screenshot" | jq -r .image | head -c 64
@@ -60,7 +62,7 @@ curl -s -H "$AUTH" -X DELETE "$GW/v1/sessions/$SID"
 # → { "ok": true, "session_id": "...", "parked": true }
 ```
 
-When the pool has no **free** workers (parked seats do not count as free), `POST /v1/sessions` returns **503** — retry, acquire an existing park, or wait for recycle / parked TTL.
+When the pool has no **free** workers of the requested `kind` (parked seats do not count as free), `POST /v1/sessions` returns **503** — retry, acquire an existing park, or wait for recycle / parked TTL.
 
 ## 3. Serial leases (same job)
 
@@ -194,5 +196,6 @@ try {
 - Send `X-Job-Id` (or body `job_id`) so serial steps can reattach and logs correlate.
 - Open `vnc_url` for human watch / HITL; do not expose worker `:8000` publicly.
 - `/health` and `/ready` report `free` / `leased` / `parked` — only **free** seats accept unrelated new leases.
-- `GET /v1/seats` (auth) lists each worker with `state`, `session_id`, `vnc_url`, `job_id` so operators can Watch / Acquire / Recycle abandoned parks without guessing ids.
+- `GET /v1/seats` (auth) lists each worker with `id`, `kind`, `state`, `session_id`, `vnc_url`, `job_id` so operators can Watch / Acquire / Recycle abandoned parks without guessing ids. After deploy, check `vnc_url`s match this environment (localhost vs `.hsv`).
+- Inventory is selected by `WORKER_INVENTORY_FILE` in `.env`; gateway logs every seat at startup and refuses to start if the file mount is missing.
 - Compose: `docker compose up --build` then bind against port **9000**.

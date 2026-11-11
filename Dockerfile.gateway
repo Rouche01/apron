@@ -3,6 +3,8 @@ WORKDIR /opt/gateway
 COPY gateway/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY gateway/ .
+RUN chmod +x /opt/gateway/entrypoint.sh
 ENV GATEWAY_PUBLIC_BASE=http://localhost:9000
+ENV REQUIRE_WORKER_INVENTORY=1
 EXPOSE 9000
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "9000"]
+CMD ["/opt/gateway/entrypoint.sh"]

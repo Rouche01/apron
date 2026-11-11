@@ -9,13 +9,13 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Annotated
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
+from inventory import SeatKind, load_workers
 from pool import SessionPool
 
 logger = logging.getLogger("computer.gateway")
@@ -26,58 +26,9 @@ PARKED_TTL = int(os.environ.get("PARKED_TTL_SEC", "1800"))
 PUBLIC_BASE = os.environ.get("GATEWAY_PUBLIC_BASE", "http://localhost:9000").rstrip("/")
 API_TOKEN = os.environ.get("COMPUTER_API_TOKEN", "").strip()
 
-
-def _with_vnc_view_defaults(url: str) -> str:
-    """Ensure lease vnc_url works behind Caddy HTTPS + stock websockify.
-
-    - autoconnect + local resize=scale
-    - path= → WS at / (websockify --web); default /websockify often 404s
-    - port=443 when page is https on standard TLS (old noVNC may dial :6080)
-    """
-    u = url.strip()
-    if not u:
-        return u
-    parsed = urlparse(u)
-    q = parse_qs(parsed.query, keep_blank_values=True)
-    if "autoconnect" not in q:
-        q["autoconnect"] = ["1"]
-    if "resize" not in q:
-        q["resize"] = ["scale"]
-    # keep_blank_values: empty path must remain ""
-    if "path" not in q:
-        q["path"] = [""]
-    if parsed.scheme == "https" and "port" not in q:
-        # Only force 443 when URL has no explicit :port (Caddy on :443)
-        if not parsed.port:
-            q["port"] = ["443"]
-    # urlencode skips empty values by default unless doseq; preserve empty path
-    pairs: list[tuple[str, str]] = []
-    for k, vals in q.items():
-        pairs.append((k, vals[-1]))
-    new_query = urlencode(pairs)
-    return urlunparse(parsed._replace(query=new_query))
-
-
-def _parse_workers() -> list[tuple[str, str]]:
-    """WORKER_URLS and WORKER_VNC_URLS are comma-separated parallel lists."""
-    urls = [u.strip() for u in os.environ.get("WORKER_URLS", "http://127.0.0.1:8000").split(",") if u.strip()]
-    vncs_raw = os.environ.get("WORKER_VNC_URLS", "").strip()
-    if vncs_raw:
-        vncs = [_with_vnc_view_defaults(v) for v in vncs_raw.split(",") if v.strip()]
-    else:
-        vncs = [
-            _with_vnc_view_defaults(f"http://127.0.0.1:{6080 + i}/vnc.html")
-            for i in range(len(urls))
-        ]
-    if len(vncs) != len(urls):
-        raise RuntimeError(
-            f"WORKER_URLS ({len(urls)}) and WORKER_VNC_URLS ({len(vncs)}) length mismatch"
-        )
-    return list(zip(urls, vncs, strict=True))
-
-
+_WORKERS = load_workers()
 pool = SessionPool(
-    _parse_workers(),
+    _WORKERS,
     default_ttl_sec=DEFAULT_TTL,
     parked_ttl_sec=PARKED_TTL,
 )
@@ -100,17 +51,31 @@ async def lifespan(_app: FastAPI):
     t.start()
     if not API_TOKEN:
         logger.warning("COMPUTER_API_TOKEN unset — gateway auth is disabled (dev only)")
-    logger.info("gateway ready: %d workers, public_base=%s", pool.worker_count, PUBLIC_BASE)
+    inv = os.environ.get("WORKER_INVENTORY_PATH", "").strip() or "(legacy WORKER_URLS)"
+    logger.info(
+        "gateway ready: %d workers, public_base=%s, inventory=%s",
+        pool.worker_count,
+        PUBLIC_BASE,
+        inv,
+    )
+    for w in _WORKERS:
+        logger.info(
+            "seat id=%s kind=%s url=%s vnc_url=%s",
+            w.id,
+            w.kind,
+            w.url,
+            w.vnc_url,
+        )
     yield
     stop.set()
 
 
 app = FastAPI(
     title="Computer Runtime Gateway",
-    version="0.2.0",
+    version="0.3.0",
     description=(
-        "Model-agnostic desktop sessions: lease a worker, screenshot/act, soft-release "
-        "(park warm Firefox), acquire or job_id-reattach, recycle to wipe. "
+        "Model-agnostic computer sessions (desktop or phone): lease a worker by kind, "
+        "screenshot/act, soft-release (park warm), acquire or job_id-reattach, recycle to wipe. "
         "Inference stays outside — any agent can bind via this OpenAPI."
     ),
     lifespan=lifespan,
@@ -133,6 +98,10 @@ class LeaseRequest(BaseModel):
     agent_id: str | None = None
     job_id: str | None = None
     ttl_sec: int | None = Field(default=None, ge=30, le=86400)
+    kind: SeatKind = Field(
+        default="desktop",
+        description="Seat kind to lease: desktop (default) or phone",
+    )
 
 
 class LeaseResponse(BaseModel):
@@ -140,6 +109,8 @@ class LeaseResponse(BaseModel):
     api_base: str
     vnc_url: str
     expires_at: datetime
+    kind: SeatKind = "desktop"
+    seat_id: str | None = None
     agent_id: str | None = None
     job_id: str | None = None
 
@@ -172,6 +143,8 @@ def _lease_response(info) -> LeaseResponse:
         api_base=_api_base(info.session_id),
         vnc_url=info.vnc_url,
         expires_at=info.expires_at,
+        kind=info.kind,
+        seat_id=info.seat_id or None,
         agent_id=info.agent_id,
         job_id=info.job_id,
     )
@@ -225,13 +198,14 @@ def list_seats(_: AuthDep):
 def ready():
     """200 when at least one worker is free and a healthy worker exists."""
     free = pool.free_count()
-    urls = [u for u, _ in _parse_workers()]
-    healthy = any(pool.worker_healthy(u) for u in urls)
+    healthy = any(pool.worker_healthy(u) for u in pool.worker_urls())
     accept_new = free > 0 and healthy
     body = {
         "ok": accept_new,
         "healthy_workers": healthy,
         "free": free,
+        "free_desktop": pool.free_count_for("desktop"),
+        "free_phone": pool.free_count_for("phone"),
         "leased": pool.leased_count(),
         "parked": pool.parked_count(),
     }
@@ -246,22 +220,32 @@ def create_session(
     body: LeaseRequest = LeaseRequest(),
     x_job_id: Annotated[str | None, Header()] = None,
 ):
-    """Lease a free worker, or reattach a parked desktop when job_id matches."""
+    """Lease a free worker of the requested kind, or reattach a parked seat when job_id matches."""
     job_id = body.job_id or x_job_id
-    info = pool.lease(agent_id=body.agent_id, job_id=job_id, ttl_sec=body.ttl_sec)
+    kind: SeatKind = body.kind
+    info = pool.lease(
+        agent_id=body.agent_id,
+        job_id=job_id,
+        ttl_sec=body.ttl_sec,
+        kind=kind,
+    )
     if not info:
         raise HTTPException(
             status_code=503,
             detail={
                 "ok": False,
-                "error": "no free workers",
+                "error": f"no free {kind} workers",
+                "kind": kind,
                 "free": pool.free_count(),
+                "free_for_kind": pool.free_count_for(kind),
                 "parked": pool.parked_count(),
             },
         )
     logger.info(
-        "leased session=%s agent=%s job=%s worker=%s",
+        "leased session=%s kind=%s seat=%s agent=%s job=%s worker=%s",
         info.session_id,
+        info.kind,
+        info.seat_id,
         info.agent_id,
         info.job_id,
         info.worker_base_url,

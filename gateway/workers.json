@@ -1,0 +1,14 @@
+[
+  {
+    "id": "desk1",
+    "kind": "desktop",
+    "url": "http://worker-1:8000",
+    "vnc_url": "http://localhost:6081/vnc.html?autoconnect=1&resize=scale&path="
+  },
+  {
+    "id": "desk2",
+    "kind": "desktop",
+    "url": "http://worker-2:8000",
+    "vnc_url": "http://localhost:6082/vnc.html?autoconnect=1&resize=scale&path="
+  }
+]

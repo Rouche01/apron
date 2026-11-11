@@ -1,9 +1,9 @@
-"""Exclusive session leases over a fixed set of worker desktops.
+"""Exclusive session leases over a fixed set of workers (desktop or phone).
 
 Worker states:
-  free   — available for a new lease (Firefox expected clean)
-  leased — exclusive mouse/keyboard claim (lease TTL)
-  parked — warm desktop kept for the same session_id/job_id (parked idle TTL)
+  free   — available for a new lease (clean / soft-reset as appropriate)
+  leased — exclusive input claim (lease TTL)
+  parked — warm seat kept for the same session_id/job_id (parked idle TTL)
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 import httpx
+
+from inventory import SeatKind, WorkerSpec
 
 SlotState = Literal["free", "leased", "parked"]
 
@@ -31,6 +33,8 @@ def _clamp_ttl(ttl: int, *, minimum: int = 30) -> int:
 class WorkerSlot:
     base_url: str
     vnc_url: str
+    kind: SeatKind = "desktop"
+    seat_id: str = ""
     state: SlotState = "free"
     session_id: str | None = None
     agent_id: str | None = None
@@ -45,6 +49,8 @@ class LeaseInfo:
     worker_base_url: str
     vnc_url: str
     expires_at: datetime
+    kind: SeatKind = "desktop"
+    seat_id: str = ""
     agent_id: str | None = None
     job_id: str | None = None
 
@@ -58,7 +64,7 @@ class AcquireResult:
 class SessionPool:
     def __init__(
         self,
-        workers: list[tuple[str, str]],
+        workers: list[WorkerSpec] | list[tuple[str, str]],
         *,
         default_ttl_sec: int = 600,
         parked_ttl_sec: int = 1800,
@@ -70,9 +76,27 @@ class SessionPool:
         self._parked_ttl = max(30, parked_ttl_sec)
         self._timeout = http_timeout
         self._lock = threading.Lock()
-        self._slots: list[WorkerSlot] = [
-            WorkerSlot(base_url=u.rstrip("/"), vnc_url=v) for u, v in workers
-        ]
+        self._slots: list[WorkerSlot] = []
+        for i, w in enumerate(workers):
+            if isinstance(w, WorkerSpec):
+                self._slots.append(
+                    WorkerSlot(
+                        base_url=w.url.rstrip("/"),
+                        vnc_url=w.vnc_url,
+                        kind=w.kind,
+                        seat_id=w.id or f"desk{i + 1}",
+                    )
+                )
+            else:
+                u, v = w
+                self._slots.append(
+                    WorkerSlot(
+                        base_url=u.rstrip("/"),
+                        vnc_url=v,
+                        kind="desktop",
+                        seat_id=f"desk{i + 1}",
+                    )
+                )
 
     @property
     def worker_count(self) -> int:
@@ -89,9 +113,19 @@ class SessionPool:
             worker_base_url=slot.base_url,
             vnc_url=slot.vnc_url,
             expires_at=slot.expires_at,
+            kind=slot.kind,
+            seat_id=slot.seat_id,
             agent_id=slot.agent_id,
             job_id=slot.job_id,
         )
+
+    def worker_urls(self) -> list[str]:
+        return [s.base_url for s in self._slots]
+
+    def free_count_for(self, kind: SeatKind) -> int:
+        with self._lock:
+            self._park_expired_leases_locked(_utcnow())
+            return sum(1 for s in self._slots if s.state == "free" and s.kind == kind)
 
     def _clear_to_free_locked(self, slot: WorkerSlot) -> None:
         slot.state = "free"
@@ -151,14 +185,15 @@ class SessionPool:
             return sum(1 for s in self._slots if s.state == "parked")
 
     def list_seats(self) -> list[dict[str, Any]]:
-        """Per-worker inventory for ops / Desk (state, session, vnc)."""
+        """Per-worker inventory for ops / Desk (state, session, vnc, kind)."""
         with self._lock:
             now = _utcnow()
             self._park_expired_leases_locked(now)
             seats: list[dict[str, Any]] = []
-            for i, slot in enumerate(self._slots):
+            for slot in self._slots:
                 seat: dict[str, Any] = {
-                    "id": f"desk{i + 1}",
+                    "id": slot.seat_id,
+                    "kind": slot.kind,
                     "state": slot.state,
                     "vnc_url": slot.vnc_url,
                     "worker_base_url": slot.base_url,
@@ -177,8 +212,9 @@ class SessionPool:
         agent_id: str | None = None,
         job_id: str | None = None,
         ttl_sec: int | None = None,
+        kind: SeatKind = "desktop",
     ) -> LeaseInfo | None:
-        """Reattach a parked desktop for job_id if present; else claim a free worker."""
+        """Reattach a parked seat for job_id if present; else claim a free worker of kind."""
         ttl = _clamp_ttl(ttl_sec if ttl_sec is not None else self._default_ttl)
         now = _utcnow()
         with self._lock:
@@ -186,7 +222,11 @@ class SessionPool:
 
             if job_id:
                 for slot in self._slots:
-                    if slot.state == "parked" and slot.job_id == job_id:
+                    if (
+                        slot.state == "parked"
+                        and slot.job_id == job_id
+                        and slot.kind == kind
+                    ):
                         slot.state = "leased"
                         slot.parked_at = None
                         slot.agent_id = agent_id if agent_id is not None else slot.agent_id
@@ -194,7 +234,7 @@ class SessionPool:
                         return self._lease_info(slot)
 
             for slot in self._slots:
-                if slot.state != "free":
+                if slot.state != "free" or slot.kind != kind:
                     continue
                 sid = str(uuid.uuid4())
                 slot.state = "leased"
@@ -258,6 +298,8 @@ class SessionPool:
                 worker_base_url=slot.base_url,
                 vnc_url=slot.vnc_url,
                 expires_at=now,
+                kind=slot.kind,
+                seat_id=slot.seat_id,
                 agent_id=slot.agent_id,
                 job_id=slot.job_id,
             )

@@ -36,14 +36,14 @@ Base: `/v1` · Auth: `Authorization: Bearer $COMPUTER_API_TOKEN` (optional if to
 
 | Method | Path | Notes |
 |--------|------|--------|
-| `POST` | `/v1/sessions` | Lease a free worker |
+| `POST` | `/v1/sessions` | Lease a free worker (`kind`: `desktop` default, or `phone`) |
 | `POST` | `/v1/sessions/{id}/heartbeat` | Extend lease TTL |
 | `POST` | `/v1/sessions/{id}/acquire` | Re-lease a **parked** desktop |
 | `DELETE` | `/v1/sessions/{id}` | Soft release → **park** (warm); `?recycle=true` wipes + frees |
 | `POST` | `/v1/sessions/{id}/recycle` | Hard wipe + free |
 | `GET` | `/v1/sessions/{id}/screenshot` | Base64 PNG |
 | `POST` | `/v1/sessions/{id}/action` | Forward to worker (`click`, `type`, `key`, …) |
-| `GET` | `/v1/seats` | Per-worker inventory (`free`/`leased`/`parked` + `session_id`/`vnc_url`/`job_id`) |
+| `GET` | `/v1/seats` | Per-worker inventory (`kind` + `free`/`leased`/`parked` + `session_id`/`vnc_url`/`job_id`) |
 | `GET` | `/health` · `/ready` | Ops aggregates |
 
 Worker (internal): `GET /health`, `GET /screenshot`, `POST /action`, `POST /session/reset`.
@@ -64,9 +64,19 @@ Pool states: **free** → **leased** → **parked** (idle TTL) → free after re
 |----------|---------|
 | `COMPUTER_API_TOKEN` | Bearer for gateway |
 | `GATEWAY_PUBLIC_BASE` | Origin baked into `api_base` (e.g. `http://desk.hsv` on ThinkPad) |
-| `WORKER_URLS` | Internal worker APIs (Compose: `http://worker-1:8000,…`) |
-| `WORKER_VNC_URLS` | Browser-reachable noVNC URLs (parallel list; use `.hsv` hostnames in deploy) |
+| `WORKER_INVENTORY_PATH` | Path to JSON array of seats (`url`, `vnc_url`, `kind`, optional `id`) |
+| `WORKER_INVENTORY_FILE` | Host path Compose mounts to that file (default `./gateway/workers.json`) |
+| `REQUIRE_WORKER_INVENTORY` | Compose/`Dockerfile.gateway` set to `1` — refuse legacy URL lists |
 | `SESSION_TTL_SEC` / `PARKED_TTL_SEC` | Lease and parked idle TTLs |
+
+**Per-environment inventory:** do not reuse one `vnc_url` across hosts. Point `.env` at the right file:
+
+- Local: `WORKER_INVENTORY_FILE=./gateway/workers.json`
+- ThinkPad/Caddy: copy `gateway/workers.hsv.example.json` → e.g. `gateway/workers.hsv.json`, edit hostnames, set `WORKER_INVENTORY_FILE=./gateway/workers.hsv.json`
+
+On boot the gateway **logs each seat** (`id`, `kind`, `url`, `vnc_url`) and **exits** if the mount is missing/invalid (Docker empty-dir footgun). Confirm with `GET /v1/seats` after up.
+
+Legacy (only if `WORKER_INVENTORY_PATH` is unset and `REQUIRE_WORKER_INVENTORY` is off): `WORKER_URLS` + `WORKER_VNC_URLS` → all `desktop`.
 
 ## ThinkPad / Caddy (`.hsv`)
 
@@ -83,7 +93,7 @@ ports:
   - "127.0.0.1:6082:6080"
 ```
 
-Set `GATEWAY_PUBLIC_BASE` / `WORKER_VNC_URLS` to those hostnames. Leave `WORKER_URLS` as Docker DNS.
+Set `GATEWAY_PUBLIC_BASE` and edit the inventory JSON `vnc_url`s to those hostnames (see `gateway/workers.hsv.example.json`). Keep worker `url`s as Docker DNS.
 
 ## Relay OS
 
