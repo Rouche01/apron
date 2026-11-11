@@ -121,7 +121,7 @@ OpenAPI live docs: `$GW/docs` · schema: `$GW/openapi.json`
 
 OpenAI-shaped tools expose only the `function` objects to the model; use each tool’s `http` hint in your executor.
 
-Example executor mapping:
+Example executor mapping (desktop + shared):
 
 | Tool / Anthropic action | Gateway |
 |-------------------------|---------|
@@ -130,6 +130,40 @@ Example executor mapping:
 | `computer_type` / `type` | `{ "type":"type", "text" }` |
 | `computer_key` / `key` | `{ "type":"key", "text" }` |
 | `computer_scroll` / `scroll` | `{ "type":"scroll", "direction", "amount" }` |
+
+### Phone actions (lease `kind: "phone"`)
+
+Coordinates are **screenshot pixels** (device-reported size, e.g. 1080×2340). Prefer phone tools when the seat is a phone; desktop chords like `ctrl+l` do not apply.
+
+| Tool / action | Gateway body |
+|---------------|--------------|
+| `computer_click` / `tap` | `{ "type":"tap", "x", "y" }` (alias: `click`) |
+| `computer_long_press` | `{ "type":"long_press", "x", "y", "duration_ms"? }` |
+| `computer_swipe` | `{ "type":"swipe", "x1", "y1", "x2", "y2", "duration_ms"? }` |
+| `computer_scroll` | `{ "type":"scroll", "direction", "amount"? }` (mid-screen swipe) |
+| `computer_type` | `{ "type":"type", "text" }` (ADB `input text`; limited special chars) |
+| `computer_key` | `{ "type":"key", "text":"back"\|"home"\|"recents"\|… }` |
+| `computer_launch` | `{ "type":"launch", "package"? , "uri"? }` |
+
+```bash
+# Lease a phone seat
+SESSION=$(curl -s -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"kind":"phone","agent_id":"demo","ttl_sec":600}' \
+  "$GW/v1/sessions")
+SID=$(echo "$SESSION" | jq -r .session_id)
+
+curl -s -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"type":"swipe","x1":540,"y1":1800,"x2":540,"y2":600,"duration_ms":350}' \
+  "$GW/v1/sessions/$SID/action"
+
+curl -s -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"type":"key","text":"home"}' \
+  "$GW/v1/sessions/$SID/action"
+
+curl -s -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"type":"launch","package":"com.android.settings"}' \
+  "$GW/v1/sessions/$SID/action"
+```
 
 ## 6. Minimal Python bind
 

@@ -1,13 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Computer Runtime — OpenAI-compatible function tools",
-  "description": "Pass these as tools[].function (or Chat Completions tools) to any OpenAI-compatible model. Your agent must hold a leased session_id and map each call to the gateway HTTP API. display_width_px / display_height_px should match the worker (default 1280×800).",
+  "description": "Pass these as tools[].function (or Chat Completions tools) to any OpenAI-compatible model. Your agent must hold a leased session_id and map each call to the gateway HTTP API. Desktop default display 1280×800; phone uses device screenshot pixels (lease with kind=phone).",
   "session": {
     "lease": "POST /v1/sessions",
+    "lease_body_kind": "desktop | phone (default desktop)",
     "screenshot": "GET /v1/sessions/{session_id}/screenshot",
     "action": "POST /v1/sessions/{session_id}/action",
     "heartbeat": "POST /v1/sessions/{session_id}/heartbeat",
     "release": "DELETE /v1/sessions/{session_id}"
+  },
+  "seat_kinds": {
+    "desktop": ["computer_screenshot", "computer_click", "computer_double_click", "computer_right_click", "computer_move", "computer_type", "computer_key", "computer_scroll"],
+    "phone": ["computer_screenshot", "computer_click", "computer_long_press", "computer_swipe", "computer_scroll", "computer_type", "computer_key", "computer_launch"]
   },
   "tools": [
     {
@@ -30,7 +35,7 @@
       "type": "function",
       "function": {
         "name": "computer_click",
-        "description": "Move to (x, y) and left-click once. Coordinates are pixels from the top-left of the display.",
+        "description": "Desktop: move to (x, y) and left-click. Phone: tap at (x, y). Coordinates are screenshot pixels from the top-left.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -134,7 +139,7 @@
       "type": "function",
       "function": {
         "name": "computer_key",
-        "description": "Press a key or chord via xdotool syntax, e.g. Return, Tab, ctrl+l, ctrl+a, Escape.",
+        "description": "Desktop: xdotool key/chord (Return, ctrl+l). Phone: Android key name (back, home, recents, enter, delete, escape) or numeric keycode.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -154,7 +159,7 @@
       "type": "function",
       "function": {
         "name": "computer_scroll",
-        "description": "Scroll the focused window. direction is up or down; amount is click repeats (default 3).",
+        "description": "Desktop: scroll wheel repeats. Phone: vertical swipe near mid-screen (or x,y). direction up|down; amount scales distance (default 3).",
         "parameters": {
           "type": "object",
           "properties": {
@@ -168,7 +173,9 @@
               "minimum": 1,
               "maximum": 50,
               "default": 3
-            }
+            },
+            "x": { "type": "integer", "minimum": 0 },
+            "y": { "type": "integer", "minimum": 0 }
           },
           "additionalProperties": false
         }
@@ -179,9 +186,96 @@
         "body": {
           "type": "scroll",
           "direction": "$direction",
-          "amount": "$amount"
+          "amount": "$amount",
+          "x": "$x",
+          "y": "$y"
         }
       }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "computer_long_press",
+        "description": "Phone: long-press at (x, y). Optional duration_ms (default ~800).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "x": { "type": "integer", "minimum": 0 },
+            "y": { "type": "integer", "minimum": 0 },
+            "duration_ms": { "type": "integer", "minimum": 1, "maximum": 10000 }
+          },
+          "required": ["x", "y"],
+          "additionalProperties": false
+        }
+      },
+      "http": {
+        "method": "POST",
+        "path": "/v1/sessions/{session_id}/action",
+        "body": {
+          "type": "long_press",
+          "x": "$x",
+          "y": "$y",
+          "duration_ms": "$duration_ms"
+        }
+      },
+      "seat_kinds": ["phone"]
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "computer_swipe",
+        "description": "Phone: swipe from (x1,y1) to (x2,y2). Optional duration_ms (default ~300).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "x1": { "type": "integer", "minimum": 0 },
+            "y1": { "type": "integer", "minimum": 0 },
+            "x2": { "type": "integer", "minimum": 0 },
+            "y2": { "type": "integer", "minimum": 0 },
+            "duration_ms": { "type": "integer", "minimum": 1, "maximum": 10000 }
+          },
+          "required": ["x1", "y1", "x2", "y2"],
+          "additionalProperties": false
+        }
+      },
+      "http": {
+        "method": "POST",
+        "path": "/v1/sessions/{session_id}/action",
+        "body": {
+          "type": "swipe",
+          "x1": "$x1",
+          "y1": "$y1",
+          "x2": "$x2",
+          "y2": "$y2",
+          "duration_ms": "$duration_ms"
+        }
+      },
+      "seat_kinds": ["phone"]
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "computer_launch",
+        "description": "Phone: launch an app by package name and/or open a VIEW uri (deep link / https).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "package": { "type": "string", "minLength": 1 },
+            "uri": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "http": {
+        "method": "POST",
+        "path": "/v1/sessions/{session_id}/action",
+        "body": {
+          "type": "launch",
+          "package": "$package",
+          "uri": "$uri"
+        }
+      },
+      "seat_kinds": ["phone"]
     }
   ]
 }
