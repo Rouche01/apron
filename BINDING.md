@@ -6,6 +6,8 @@ Default display (desktop): **1280×800**. Gateway: `http://localhost:9000` (Comp
 
 Seat **kind** (inventory JSON via `WORKER_INVENTORY_PATH`): `desktop` (default) or `phone`. `POST /v1/sessions` body field `kind` selects the pool; omit it for desktop. Lease response includes `kind` and `seat_id`.
 
+**Relay OS:** phase 1 needs no Relay package changes — bind with HTTP as below. Later work in `@relay/engines-computer` / browse-policy is sketched under **Relay OS → Downstream bind notes** in [`AGENTS.md`](AGENTS.md).
+
 ## Lease vs park vs recycle
 
 | Concept | What it means |

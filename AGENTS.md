@@ -122,6 +122,19 @@ Set `GATEWAY_PUBLIC_BASE` and edit the inventory JSON `vnc_url`s to those hostna
 - Package: `@relay/engines-computer` (`ExecutionEngine` type `"computer"`)
 - CommunityEngager: `REDDIT_TRANSPORT=computer` is **evidence-only** (lease → open thread URL → screenshot → release; **never posts**). Needs `COMMUNITY_POST_MODE=auto` to reach execute; `COMPUTER_GATEWAY_URL` + matching token.
 
+### Downstream bind notes (phone) — no relay-os changes required for phase 1
+
+Agents can curl this gateway today. When Relay grows phone seats, keep inference/persona in relay-os and treat this repo as the device control plane only.
+
+| Relay surface | Suggested change (later) |
+|---------------|--------------------------|
+| `@relay/engines-computer` | Pass `kind: "phone"` on `POST /v1/sessions`. Forward phone action bodies (`swipe`, `long_press`, `launch`, `key` with `back`/`home`/`recents`, optional `ref`). Prefer `GET …/observe` when the loop is vision+tree; fall back to screenshot pixels for custom views (Reels, etc.). |
+| `@relay/browse-policy` (or phone system prompt) | Phone priors: swipe-heavy navigation, avoid desktop chords (`ctrl+l`), use `launch`/`uri` to open apps, `home`/`back` for system chrome. HITL via lease `vnc_url` (scrcpy-web). |
+| Desk / Settings | Inventory already exposes `kind` on `/v1/seats`; show phone seats separately from desktop noVNC. |
+| CommunityEngager | Stay **desktop evidence-only** unless an explicit phone transport is designed; do not silently lease `kind=phone` for Reddit. |
+
+Park/recycle semantics: phone park → soft force-stop (packages stay logged in); recycle → `pm clear` on configured packages — map Relay “job done” to recycle only when a clean app state is intended.
+
 ## Out of scope (for now)
 
 - On-demand container/Pod per lease
