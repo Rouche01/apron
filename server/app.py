@@ -114,8 +114,14 @@ def _clear_sessionstore(profile: Path) -> None:
         shutil.rmtree(backups, ignore_errors=True)
 
 
+class ResetBody(BaseModel):
+    """Gateway may send {hard: bool}; desktop always performs a Firefox wipe."""
+
+    hard: bool = True
+
+
 @app.post("/session/reset")
-def session_reset():
+def session_reset(_body: ResetBody = ResetBody()):
     """Recycle the browser session without restarting the whole container."""
     _stop_firefox()
     profile = Path(FIREFOX_PROFILE)
@@ -133,7 +139,7 @@ def session_reset():
         ) from e
     # Brief settle so the first screenshot/action is not mid-startup.
     time.sleep(1.5)
-    return {"ok": True, "reset": "firefox", "profile": PROFILE_NAME}
+    return {"ok": True, "reset": "firefox", "profile": PROFILE_NAME, "hard": True}
 
 
 

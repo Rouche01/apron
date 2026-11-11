@@ -1,0 +1,23 @@
+# Phone worker: FastAPI + adb. Prefer host network / USB passthrough for device access.
+# HITL (scrcpy-web) is configured on the gateway inventory vnc_url, not inside this image.
+FROM debian:bookworm-slim
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PORT=8000
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    adb \
+    ca-certificates \
+    python3 \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY phone/requirements.txt /opt/phone/requirements.txt
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir -r /opt/phone/requirements.txt
+
+COPY phone/ /opt/phone/
+RUN chmod +x /opt/phone/entrypoint.sh
+
+ENV PATH="/opt/venv/bin:$PATH"
+WORKDIR /opt/phone
+EXPOSE 8000
+ENTRYPOINT ["/opt/phone/entrypoint.sh"]

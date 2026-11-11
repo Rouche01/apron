@@ -4,7 +4,7 @@ Guidance for agents working in this repo. Inference stays **outside**; this proj
 
 ## What this is
 
-Self-hosted **computer-use** stack: warm Linux desktops (XFCE + Firefox) behind a **gateway** that leases exclusive sessions. Agents call HTTP (screenshot / mouse / keyboard); humans watch via noVNC.
+Self-hosted **computer-use** stack: warm Linux desktops (XFCE + Firefox) and optional **Android phone** seats behind a **gateway** that leases exclusive sessions. Agents call HTTP (screenshot / input); humans watch via noVNC or scrcpy-web.
 
 Sibling consumer: `~/Projects/relay-os` (`@relay/engines-computer`, CommunityEngager `REDDIT_TRANSPORT=computer`).
 
@@ -12,9 +12,10 @@ Sibling consumer: `~/Projects/relay-os` (`@relay/engines-computer`, CommunityEng
 
 | Path | Role |
 |------|------|
-| `Dockerfile` + `entrypoint.sh` + `server/app.py` | **Worker** — Xvfb, desktop, noVNC `:6080`, control API `:8000` |
+| `Dockerfile` + `entrypoint.sh` + `server/app.py` | **Desktop worker** — Xvfb, desktop, noVNC `:6080`, control API `:8000` |
+| `Dockerfile.phone` + `phone/` | **Phone worker** — ADB screenshot/tap/swipe/key/launch, soft/hard reset `:8000` |
 | `Dockerfile.gateway` + `gateway/` | **Gateway** — lease/park/release, proxy, Bearer auth, OpenAPI `:9000` |
-| `docker-compose.yml` | `gateway` + `worker-1` + `worker-2` on `computer_internal` |
+| `docker-compose.yml` | `gateway` + `worker-1` + `worker-2` on `computer_internal` (+ phone in later compose) |
 | `schemas/` + `BINDING.md` | OpenAI / Anthropic-shaped tool maps for any agent host |
 | `profile/` + `scripts/` | Firefox profile / launch helpers |
 
@@ -42,11 +43,13 @@ Base: `/v1` · Auth: `Authorization: Bearer $COMPUTER_API_TOKEN` (optional if to
 | `DELETE` | `/v1/sessions/{id}` | Soft release → **park** (warm); `?recycle=true` wipes + frees |
 | `POST` | `/v1/sessions/{id}/recycle` | Hard wipe + free |
 | `GET` | `/v1/sessions/{id}/screenshot` | Base64 PNG |
-| `POST` | `/v1/sessions/{id}/action` | Forward to worker (`click`, `type`, `key`, …) |
+| `POST` | `/v1/sessions/{id}/action` | Forward to worker (`click`/`tap`, `swipe`, `type`, `key`, `launch`, …) |
 | `GET` | `/v1/seats` | Per-worker inventory (`kind` + `free`/`leased`/`parked` + `session_id`/`vnc_url`/`job_id`) |
 | `GET` | `/health` · `/ready` | Ops aggregates |
 
 Worker (internal): `GET /health`, `GET /screenshot`, `POST /action`, `POST /session/reset`.
+
+Phone worker env: `ADB_SERIAL` (required if multiple devices), `ADB_CONNECT` (optional `host:port`), `RESET_FORCE_STOP_PACKAGES` / `RECYCLE_CLEAR_PACKAGES` (comma package lists). Soft park → force-stop; recycle / idle wipe → `pm clear`. HITL URL is **scrcpy-web** in inventory `vnc_url` (not started by this image yet).
 
 Pool states: **free** → **leased** → **parked** (idle TTL) → free after reset. Capacity is **fixed** (Compose workers), not on-demand.
 

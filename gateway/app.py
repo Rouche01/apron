@@ -128,9 +128,16 @@ class ActionBody(BaseModel):
     type: str
     x: int | None = None
     y: int | None = None
+    x1: int | None = None
+    y1: int | None = None
+    x2: int | None = None
+    y2: int | None = None
     text: str | None = None
     direction: str = "down"
     amount: int = 3
+    duration_ms: int | None = None
+    package: str | None = None
+    uri: str | None = None
 
 
 def _api_base(session_id: str) -> str:
@@ -292,13 +299,21 @@ def delete_session(
     _: AuthDep,
     recycle: Annotated[bool, Query(description="Wipe Firefox and free the worker")] = False,
 ):
-    """Soft release parks the warm desktop. Pass recycle=true to wipe and free."""
+    """Soft release parks the warm seat. Pass recycle=true to wipe and free."""
     if recycle:
         return _recycle_session(session_id)
     info = pool.release(session_id)
     if not info:
         raise HTTPException(status_code=404, detail="session not found or expired")
-    logger.info("parked session=%s worker=%s", session_id, info.worker_base_url)
+    # Phone: soft force-stop on park (keep app data). Desktop park stays warm (no reset).
+    if info.kind == "phone":
+        pool.reset_worker(info.worker_base_url, hard=False)
+    logger.info(
+        "parked session=%s kind=%s worker=%s",
+        session_id,
+        info.kind,
+        info.worker_base_url,
+    )
     return {"ok": True, "session_id": session_id, "parked": True}
 
 
@@ -306,7 +321,7 @@ def _recycle_session(session_id: str) -> dict:
     worker_url = pool.recycle(session_id)
     if not worker_url:
         raise HTTPException(status_code=404, detail="session not found or expired")
-    pool.reset_worker(worker_url)
+    pool.reset_worker(worker_url, hard=True)
     logger.info("recycled session=%s worker=%s", session_id, worker_url)
     return {"ok": True, "session_id": session_id, "recycled": True}
 

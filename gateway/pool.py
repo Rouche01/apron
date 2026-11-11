@@ -354,10 +354,14 @@ class SessionPool:
                 data = {"detail": r.text}
             return r.status_code, data
 
-    def reset_worker(self, worker_base_url: str) -> None:
+    def reset_worker(self, worker_base_url: str, *, hard: bool = True) -> None:
+        """Ask worker to reset. hard=True → wipe (desktop Firefox / phone pm clear)."""
         with httpx.Client(timeout=self._timeout) as client:
             try:
-                client.post(f"{worker_base_url}/session/reset")
+                client.post(
+                    f"{worker_base_url}/session/reset",
+                    json={"hard": hard},
+                )
             except httpx.HTTPError:
                 pass
 
