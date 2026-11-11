@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, model_validator
 
 import adbutil
+import uia
 
 logger = logging.getLogger("computer.phone")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -18,7 +19,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 app = FastAPI(
     title="Computer Phone Worker",
     version="0.1.0",
-    description="Android seat via ADB: screenshot / action / soft reset / hard recycle.",
+    description=(
+        "Android seat via ADB: screenshot / observe (UIAutomator) / action / "
+        "soft reset / hard recycle."
+    ),
 )
 
 
@@ -107,6 +111,27 @@ def screenshot():
     return {"image": base64.b64encode(png).decode()}
 
 
+@app.get("/observe")
+def observe(max_elements: int = 200):
+    """Screenshot + trimmed UIAutomator tree (text, content-desc, bounds, ref)."""
+    max_elements = max(1, min(500, max_elements))
+    try:
+        png = adbutil.screencap_png()
+        elements = uia.observe_elements(max_elements=max_elements)
+        size = adbutil.wm_size()
+    except adbutil.AdbError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    body: dict = {
+        "ok": True,
+        "image": base64.b64encode(png).decode(),
+        "elements": elements,
+        "element_count": len(elements),
+    }
+    if size:
+        body["geometry"] = {"width": size[0], "height": size[1]}
+    return body
+
+
 class Action(BaseModel):
     type: str
     x: int | None = None
@@ -121,24 +146,34 @@ class Action(BaseModel):
     duration_ms: int | None = None
     package: str | None = None
     uri: str | None = None
+    ref: str | None = None
+
+
+def _resolve_xy(a: Action) -> tuple[int, int]:
+    if a.ref:
+        el = uia.find_element_by_ref(a.ref)
+        if not el:
+            raise HTTPException(status_code=404, detail=f"ref not found in current tree: {a.ref}")
+        c = el["center"]
+        return int(c["x"]), int(c["y"])
+    if a.x is None or a.y is None:
+        raise HTTPException(status_code=400, detail="requires x,y or ref")
+    return a.x, a.y
 
 
 @app.post("/action")
 def action(a: Action):
     try:
         if a.type in ("click", "tap"):
-            if a.x is None or a.y is None:
-                raise HTTPException(status_code=400, detail="tap/click requires x,y")
-            adbutil.tap(a.x, a.y)
+            x, y = _resolve_xy(a)
+            adbutil.tap(x, y)
         elif a.type == "double_click":
-            if a.x is None or a.y is None:
-                raise HTTPException(status_code=400, detail="double_click requires x,y")
-            adbutil.tap(a.x, a.y)
-            adbutil.tap(a.x, a.y)
+            x, y = _resolve_xy(a)
+            adbutil.tap(x, y)
+            adbutil.tap(x, y)
         elif a.type == "long_press":
-            if a.x is None or a.y is None:
-                raise HTTPException(status_code=400, detail="long_press requires x,y")
-            adbutil.long_press(a.x, a.y, a.duration_ms or 800)
+            x, y = _resolve_xy(a)
+            adbutil.long_press(x, y, a.duration_ms or 800)
         elif a.type == "swipe":
             if None in (a.x1, a.y1, a.x2, a.y2):
                 raise HTTPException(status_code=400, detail="swipe requires x1,y1,x2,y2")

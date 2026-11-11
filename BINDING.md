@@ -144,6 +144,8 @@ Coordinates are **screenshot pixels** (device-reported size, e.g. 1080×2340). P
 | `computer_type` | `{ "type":"type", "text" }` (ADB `input text`; limited special chars) |
 | `computer_key` | `{ "type":"key", "text":"back"\|"home"\|"recents"\|… }` |
 | `computer_launch` | `{ "type":"launch", "package"? , "uri"? }` |
+| observe (HTTP) | `GET .../observe` → `{ image, elements[{ref,text,content_desc,bounds,center,clickable,…}] }` |
+| tap by ref | `{ "type":"tap", "ref":"e3" }` (re-dumps tree; prefers `resource-id` refs when unique) |
 
 ```bash
 # Lease a phone seat
@@ -151,6 +153,10 @@ SESSION=$(curl -s -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"kind":"phone","agent_id":"demo","ttl_sec":600}' \
   "$GW/v1/sessions")
 SID=$(echo "$SESSION" | jq -r .session_id)
+
+# Vision + tree
+OBS=$(curl -s -H "$AUTH" "$GW/v1/sessions/$SID/observe")
+echo "$OBS" | jq '{geometry, element_count, sample: .elements[:3]}'
 
 curl -s -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"type":"swipe","x1":540,"y1":1800,"x2":540,"y2":600,"duration_ms":350}' \

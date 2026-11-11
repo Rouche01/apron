@@ -138,6 +138,7 @@ class ActionBody(BaseModel):
     duration_ms: int | None = None
     package: str | None = None
     uri: str | None = None
+    ref: str | None = None
 
 
 def _api_base(session_id: str) -> str:
@@ -335,6 +336,21 @@ def recycle_session(session_id: str, _: AuthDep):
 @app.get("/v1/sessions/{session_id}/screenshot", tags=["observe"])
 def screenshot(session_id: str, _: AuthDep):
     status, data = pool.proxy_get(session_id, "/screenshot")
+    if status >= 400:
+        raise HTTPException(status_code=status, detail=data)
+    return data
+
+
+@app.get("/v1/sessions/{session_id}/observe", tags=["observe"])
+def observe(
+    session_id: str,
+    _: AuthDep,
+    max_elements: Annotated[int, Query(ge=1, le=500)] = 200,
+):
+    """Phone: screenshot + trimmed UIAutomator elements. Desktop workers return 404."""
+    status, data = pool.proxy_get(
+        session_id, f"/observe?max_elements={max_elements}"
+    )
     if status >= 400:
         raise HTTPException(status_code=status, detail=data)
     return data

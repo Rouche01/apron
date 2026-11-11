@@ -56,7 +56,8 @@ Base: `/v1` · Auth: `Authorization: Bearer $COMPUTER_API_TOKEN` (optional if to
 | `DELETE` | `/v1/sessions/{id}` | Soft release → **park** (warm); `?recycle=true` wipes + frees |
 | `POST` | `/v1/sessions/{id}/recycle` | Hard wipe + free |
 | `GET` | `/v1/sessions/{id}/screenshot` | Base64 PNG |
-| `POST` | `/v1/sessions/{id}/action` | Forward to worker (`click`/`tap`, `swipe`, `type`, `key`, `launch`, …) |
+| `GET` | `/v1/sessions/{id}/observe` | Phone: PNG + trimmed UIAutomator `elements[]` (desktop: 404) |
+| `POST` | `/v1/sessions/{id}/action` | Forward to worker (`click`/`tap`, `swipe`, `type`, `key`, `launch`, `ref`, …) |
 | `GET` | `/v1/seats` | Per-worker inventory (`kind` + `free`/`leased`/`parked` + `session_id`/`vnc_url`/`job_id`) |
 | `GET` | `/health` · `/ready` | Ops aggregates |
 
