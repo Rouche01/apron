@@ -10,5 +10,11 @@
     "kind": "desktop",
     "url": "http://worker-2:8000",
     "vnc_url": "https://cu2.hsv/vnc.html?autoconnect=1&resize=scale&path=&port=443"
+  },
+  {
+    "id": "phone1",
+    "kind": "phone",
+    "url": "http://host.docker.internal:8003",
+    "vnc_url": "https://cu-phone.hsv/"
   }
 ]

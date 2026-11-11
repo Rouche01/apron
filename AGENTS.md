@@ -15,7 +15,7 @@ Sibling consumer: `~/Projects/relay-os` (`@relay/engines-computer`, CommunityEng
 | `Dockerfile` + `entrypoint.sh` + `server/app.py` | **Desktop worker** — Xvfb, desktop, noVNC `:6080`, control API `:8000` |
 | `Dockerfile.phone` + `phone/` | **Phone worker** — ADB screenshot/tap/swipe/key/launch, soft/hard reset `:8000` |
 | `Dockerfile.gateway` + `gateway/` | **Gateway** — lease/park/release, proxy, Bearer auth, OpenAPI `:9000` |
-| `docker-compose.yml` | `gateway` + `worker-1` + `worker-2` on `computer_internal` (+ phone in later compose) |
+| `docker-compose.yml` | `gateway` + `worker-1` + `worker-2`; optional `phone-1` via profile `phone` |
 | `schemas/` + `BINDING.md` | OpenAI / Anthropic-shaped tool maps for any agent host |
 | `profile/` + `scripts/` | Firefox profile / launch helpers |
 
@@ -28,8 +28,21 @@ curl -s http://localhost:9000/health
 curl -s -H "Authorization: Bearer $COMPUTER_API_TOKEN" -X POST http://localhost:9000/v1/sessions
 ```
 
+Desktop + phone (third seat; ADB on the Compose host — USB or wireless):
+
+```bash
+# .env: WORKER_INVENTORY_FILE=./gateway/workers.with-phone.json
+#       COMPOSE_PROFILES=phone
+#       ADB_SERIAL=…   # and/or ADB_CONNECT=host:port
+docker compose up --build -d
+curl -s -H "Authorization: Bearer $COMPUTER_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"phone"}' http://localhost:9000/v1/sessions
+```
+
 - Gateway: `http://localhost:9000` (`/docs`, `/openapi.json`)
 - noVNC: `http://localhost:6081/vnc.html?…` and `:6082` (lease `vnc_url` includes `autoconnect=1&resize=scale`)
+- Phone HITL: inventory `vnc_url` (scrcpy-web placeholder `:6083` / `.hsv`) — run scrcpy-web separately for now
 
 ## Agent-facing API (gateway)
 
@@ -69,13 +82,16 @@ Pool states: **free** → **leased** → **parked** (idle TTL) → free after re
 | `GATEWAY_PUBLIC_BASE` | Origin baked into `api_base` (e.g. `http://desk.hsv` on ThinkPad) |
 | `WORKER_INVENTORY_PATH` | Path to JSON array of seats (`url`, `vnc_url`, `kind`, optional `id`) |
 | `WORKER_INVENTORY_FILE` | Host path Compose mounts to that file (default `./gateway/workers.json`) |
+| `COMPOSE_PROFILES` | Set `phone` to start `phone-1` (use with `workers.with-phone.json`) |
+| `ADB_SERIAL` / `ADB_CONNECT` | Phone worker device binding (host must see the device) |
 | `REQUIRE_WORKER_INVENTORY` | Compose/`Dockerfile.gateway` set to `1` — refuse legacy URL lists |
 | `SESSION_TTL_SEC` / `PARKED_TTL_SEC` | Lease and parked idle TTLs |
 
 **Per-environment inventory:** do not reuse one `vnc_url` across hosts. Point `.env` at the right file:
 
-- Local: `WORKER_INVENTORY_FILE=./gateway/workers.json`
-- ThinkPad/Caddy: copy `gateway/workers.hsv.example.json` → e.g. `gateway/workers.hsv.json`, edit hostnames, set `WORKER_INVENTORY_FILE=./gateway/workers.hsv.json`
+- Local desktop-only: `WORKER_INVENTORY_FILE=./gateway/workers.json`
+- Local + phone: `workers.with-phone.json` + `COMPOSE_PROFILES=phone`
+- ThinkPad/Caddy: copy `gateway/workers.hsv.example.json` → e.g. `gateway/workers.hsv.json`, edit hostnames (includes optional `phone1`)
 
 On boot the gateway **logs each seat** (`id`, `kind`, `url`, `vnc_url`) and **exits** if the mount is missing/invalid (Docker empty-dir footgun). Confirm with `GET /v1/seats` after up.
 
@@ -85,7 +101,9 @@ Legacy (only if `WORKER_INVENTORY_PATH` is unset and `REQUIRE_WORKER_INVENTORY` 
 
 Match relay-os deploy style: backends on `127.0.0.1`, Caddy Host routing, laptop `/etc/hosts` → Tailscale IP.
 
-Suggested names: **`desk.hsv`** / **`desk1.hsv`** / **`desk2.hsv`**, or the live Desk deploy pair **`cu-gateway.hsv`** / **`cu1.hsv`** / **`cu2.hsv`**. Laptop install + Settings: `relay-os/apps/relay-desk/LAPTOP.md`.
+Suggested names: **`desk.hsv`** / **`desk1.hsv`** / **`desk2.hsv`**, or the live Desk deploy pair **`cu-gateway.hsv`** / **`cu1.hsv`** / **`cu2.hsv`** (phone HITL e.g. **`cu-phone.hsv`**). Laptop install + Settings: `relay-os/apps/relay-desk/LAPTOP.md`.
+
+Phone ADB must reach the device **from the ThinkPad** (wireless ADB preferred; USB into ThinkPad OK). Laptop-only USB does not attach to a ThinkPad-hosted `phone-1`.
 
 On deploy hosts, bind Compose ports to loopback:
 
@@ -96,7 +114,7 @@ ports:
   - "127.0.0.1:6082:6080"
 ```
 
-Set `GATEWAY_PUBLIC_BASE` and edit the inventory JSON `vnc_url`s to those hostnames (see `gateway/workers.hsv.example.json`). Keep worker `url`s as Docker DNS.
+Set `GATEWAY_PUBLIC_BASE` and edit the inventory JSON `vnc_url`s to those hostnames (see `gateway/workers.hsv.example.json`). Keep desktop worker `url`s as Docker DNS; phone control URL stays `http://host.docker.internal:8003` when `phone-1` uses host networking.
 
 ## Relay OS
 
