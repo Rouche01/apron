@@ -1,0 +1,11 @@
+# ws-scrcpy run config — HTTP on :8000 (Compose maps host :6083).
+# Android tracker only; iOS disabled.
+
+runGoogTracker: true
+runApplTracker: false
+announceGoogTracker: true
+announceApplTracker: false
+
+server:
+  - secure: false
+    port: 8000

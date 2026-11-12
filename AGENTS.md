@@ -14,8 +14,9 @@ Sibling consumer: `~/Projects/relay-os` (`@relay/engines-computer`, CommunityEng
 |------|------|
 | `Dockerfile` + `entrypoint.sh` + `server/app.py` | **Desktop worker** — Xvfb, desktop, noVNC `:6080`, control API `:8000` |
 | `Dockerfile.phone` + `phone/` | **Phone worker** — ADB screenshot/tap/swipe/key/launch, soft/hard reset `:8000` |
+| `Dockerfile.scrcpy` + `scrcpy-web/` | **Phone HITL** — Mel0nFish/ws-scrcpy-enhanced (scrcpy-server 3.3.4) on host `:6083` (profile `phone`; Android 16 OK) |
 | `Dockerfile.gateway` + `gateway/` | **Gateway** — lease/park/release, proxy, Bearer auth, OpenAPI `:9000` |
-| `docker-compose.yml` | `gateway` + `worker-1` + `worker-2`; optional `phone-1` via profile `phone` |
+| `docker-compose.yml` | `gateway` + `worker-1` + `worker-2`; optional `phone-1` + `scrcpy-web` via profile `phone` |
 | `schemas/` + `BINDING.md` | OpenAI / Anthropic-shaped tool maps for any agent host |
 | `profile/` + `scripts/` | Firefox profile / launch helpers |
 
@@ -34,15 +35,18 @@ Desktop + phone (third seat; ADB on the Compose host — USB or wireless):
 # .env: WORKER_INVENTORY_FILE=./gateway/workers.with-phone.json
 #       COMPOSE_PROFILES=phone
 #       ADB_SERIAL=…   # and/or ADB_CONNECT=host:port
+# Authorize wireless on the host first: adb connect ip:5555 (Allow on phone)
 docker compose up --build -d
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:6083/   # expect 200
 curl -s -H "Authorization: Bearer $COMPUTER_API_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"kind":"phone"}' http://localhost:9000/v1/sessions
+# Open lease vnc_url (…/watch.html) — live stream; intervene via gateway action / physical device
 ```
 
 - Gateway: `http://localhost:9000` (`/docs`, `/openapi.json`)
 - noVNC: `http://localhost:6081/vnc.html?…` and `:6082` (lease `vnc_url` includes `autoconnect=1&resize=scale`)
-- Phone HITL: inventory `vnc_url` (scrcpy-web placeholder `:6083` / `.hsv`) — run scrcpy-web separately for now
+- Phone HITL: Compose `scrcpy-web` on `:6083` (`/watch.html` auto-selects `ADB_SERIAL`; `/` is the device picker)
 
 ## Agent-facing API (gateway)
 
@@ -63,9 +67,9 @@ Base: `/v1` · Auth: `Authorization: Bearer $COMPUTER_API_TOKEN` (optional if to
 
 Worker (internal): `GET /health`, `GET /screenshot`, `POST /action`, `POST /session/reset`.
 
-Phone worker env: `ADB_SERIAL` (required if multiple devices), `ADB_CONNECT` (optional `host:port`), `RESET_FORCE_STOP_PACKAGES` / `RECYCLE_CLEAR_PACKAGES` (comma package lists). Soft park → force-stop; recycle / idle wipe → `pm clear`. HITL URL is **scrcpy-web** in inventory `vnc_url` (not started by this image yet).
+Phone worker env: `ADB_SERIAL` (required if multiple devices), `ADB_CONNECT` (optional `host:port`), `RESET_FORCE_STOP_PACKAGES` / `RECYCLE_CLEAR_PACKAGES` (comma package lists). Soft park → force-stop; recycle / idle wipe → `pm clear`.
 
-Compose `phone-1` is on the bridge network (`http://phone-1:8003` in inventory) and mounts host `~/.android` (shared RSA keys). Authorize wireless on the **host** first (`adb connect ip:5555` + Allow prompt); set `ADB_SERIAL`/`ADB_CONNECT` to `ip:5555`.
+Compose `phone-1` + `scrcpy-web` share the bridge network and host `~/.android`. Authorize wireless on the **host** first (`adb connect ip:5555` + Allow prompt); set `ADB_SERIAL`/`ADB_CONNECT` to `ip:5555`. Inventory `vnc_url` points at scrcpy-web (`http://localhost:6083/watch.html`). Watch is **read-only**; drive the device via gateway `POST …/action` or the physical phone.
 
 Pool states: **free** → **leased** → **parked** (idle TTL) → free after reset. Capacity is **fixed** (Compose workers), not on-demand.
 
@@ -85,8 +89,9 @@ Pool states: **free** → **leased** → **parked** (idle TTL) → free after re
 | `GATEWAY_PUBLIC_BASE` | Origin baked into `api_base` (e.g. `http://desk.hsv` on ThinkPad) |
 | `WORKER_INVENTORY_PATH` | Path to JSON array of seats (`url`, `vnc_url`, `kind`, optional `id`) |
 | `WORKER_INVENTORY_FILE` | Host path Compose mounts to that file (default `./gateway/workers.json`) |
-| `COMPOSE_PROFILES` | Set `phone` to start `phone-1` (use with `workers.with-phone.json`) |
-| `ADB_SERIAL` / `ADB_CONNECT` | Phone worker device binding (host must see the device) |
+| `COMPOSE_PROFILES` | Set `phone` to start `phone-1` + `scrcpy-web` (use with `workers.with-phone.json`) |
+| `ADB_SERIAL` / `ADB_CONNECT` | Phone worker + scrcpy-web device binding (host must see the device) |
+| `PHONE_HITL_URL` | Optional override mirrored into phone-1 health detail (default `http://localhost:6083/watch.html`) |
 | `REQUIRE_WORKER_INVENTORY` | Compose/`Dockerfile.gateway` set to `1` — refuse legacy URL lists |
 | `SESSION_TTL_SEC` / `PARKED_TTL_SEC` | Lease and parked idle TTLs |
 
@@ -115,9 +120,18 @@ ports:
   - "127.0.0.1:9000:9000"
   - "127.0.0.1:6081:6080"
   - "127.0.0.1:6082:6080"
+  - "127.0.0.1:6083:8000"   # scrcpy-web (profile phone)
 ```
 
-Set `GATEWAY_PUBLIC_BASE` and edit the inventory JSON `vnc_url`s to those hostnames (see `gateway/workers.hsv.example.json`). Keep desktop worker `url`s as Docker DNS; phone control URL is `http://phone-1:8003` when using the Compose `phone` profile (bridge).
+Caddy Host route for phone Watch (apply on the deploy host; see also `relay-os/apps/relay-desk/LAPTOP.md`):
+
+```caddy
+cu-phone.hsv {
+  reverse_proxy 127.0.0.1:6083
+}
+```
+
+Set `GATEWAY_PUBLIC_BASE` and edit the inventory JSON `vnc_url`s to those hostnames (see `gateway/workers.hsv.example.json` — phone uses `https://cu-phone.hsv/watch.html`). Keep desktop worker `url`s as Docker DNS; phone control URL is `http://phone-1:8003` when using the Compose `phone` profile (bridge).
 
 ## Relay OS
 
@@ -139,7 +153,7 @@ Agents can curl this gateway today. When Relay grows phone seats, keep inference
 
 Park/recycle semantics: phone park → soft force-stop (packages stay logged in); recycle → `pm clear` on configured packages — map Relay “job done” to recycle only when a clean app state is intended.
 
-Phone HITL Watch contract (this runtime): scrcpy-web on `:6083` is **read-only**; inventory `vnc_url` is localhost or `https://cu-phone.hsv/`. See `.cursor/plans/phone_scrcpy_web_hitl.plan.md`.
+Phone HITL Watch contract (this runtime): Compose `scrcpy-web` on `:6083` is **read-only**; inventory `vnc_url` is `http://localhost:6083/watch.html` or `https://cu-phone.hsv/watch.html`. See `.cursor/plans/phone_scrcpy_web_hitl.plan.md`.
 
 ## Out of scope (for now)
 

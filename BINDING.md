@@ -150,11 +150,13 @@ Coordinates are **screenshot pixels** (device-reported size, e.g. 1080×2340). P
 | tap by ref | `{ "type":"tap", "ref":"e3" }` (re-dumps tree; prefers `resource-id` refs when unique) |
 
 ```bash
-# Lease a phone seat
+# Lease a phone seat (Compose profile phone + workers.with-phone.json)
 SESSION=$(curl -s -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"kind":"phone","agent_id":"demo","ttl_sec":600}' \
   "$GW/v1/sessions")
 SID=$(echo "$SESSION" | jq -r .session_id)
+# Watch: open .vnc_url (scrcpy-web /watch.html on :6083) — read-only HITL
+echo "$SESSION" | jq '{session_id, kind, vnc_url}'
 
 # Vision + tree
 OBS=$(curl -s -H "$AUTH" "$GW/v1/sessions/$SID/observe")

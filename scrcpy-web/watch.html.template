@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Phone Watch</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; color: #222; }
+    code { background: #f2f2f2; padding: 0.1em 0.35em; }
+  </style>
+</head>
+<body>
+  <p id="msg">Opening device stream…</p>
+  <script>
+(function () {
+  var serial = "__ADB_SERIAL__";
+  if (!serial) {
+    document.getElementById("msg").textContent =
+      "ADB_SERIAL unset — opening device list.";
+    location.replace("/");
+    return;
+  }
+  // Same proxy-over-adb ws URL DeviceTracker.createUrl builds (SERVER_PORT=8886).
+  var wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+  var port = location.port;
+  var host = location.hostname + (port ? ":" + port : "");
+  var ws =
+    wsProto +
+    "//" +
+    host +
+    "/?action=proxy-adb&remote=tcp%3A8886&udid=" +
+    encodeURIComponent(serial);
+  var hash =
+    "#!action=stream&udid=" +
+    encodeURIComponent(serial) +
+    "&player=mse&ws=" +
+    encodeURIComponent(ws);
+  location.replace("/" + hash);
+})();
+  </script>
+  <noscript>
+    Enable JavaScript, or open <a href="/">the device list</a> and start a stream.
+  </noscript>
+</body>
+</html>

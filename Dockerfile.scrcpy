@@ -1,0 +1,60 @@
+# In-repo HITL stream for phone seats. Host maps :6083 → container :8000.
+#
+# Upstream NetrisTV/ws-scrcpy (even master) ships scrcpy-server ~1.19-ws*, which
+# breaks video on Android 14–16. We pin Mel0nFish/ws-scrcpy-enhanced with
+# scrcpy-server 3.3.4. WebRTC (wrtc native) is stripped — Watch uses proxy-adb.
+ARG WS_SCRCPY_REPO=https://github.com/Mel0nFish/ws-scrcpy-enhanced.git
+ARG WS_SCRCPY_REF=32e58f9aa330bb30454d9fe31251c550008fc373
+
+FROM node:20-bookworm AS builder
+ARG WS_SCRCPY_REPO
+ARG WS_SCRCPY_REF
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    python3 \
+    make \
+    g++ \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+RUN git init \
+    && git remote add origin "${WS_SCRCPY_REPO}" \
+    && git fetch --depth 1 origin "${WS_SCRCPY_REF}" \
+    && git checkout FETCH_HEAD
+COPY scrcpy-web/build.config.override.json /build/build.config.override.json
+# Quieter on-device logs; drop WebRTC server path (needs native wrtc we skip).
+RUN sed -i "s/export const LOG_LEVEL = 'DEBUG'/export const LOG_LEVEL = 'ERROR'/" \
+        src/common/Constants.ts \
+    && sed -i \
+        -e "/WebRtcScrcpyProxy/d" \
+        src/server/index.ts \
+    && node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync("package.json","utf8")); \
+        delete p.dependencies.wrtc; delete p.dependencies["node-datachannel"]; \
+        fs.writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n");'
+RUN npm install --ignore-scripts \
+    && npm rebuild node-pty \
+    && npm run dist \
+    && cd dist && npm install --omit=dev --ignore-scripts \
+    && npm rebuild node-pty
+
+FROM node:20-bookworm-slim
+ENV DEBIAN_FRONTEND=noninteractive \
+    NODE_ENV=production \
+    WS_SCRCPY_CONFIG=/opt/ws-scrcpy/config.yaml \
+    HOME=/root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    adb \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/dist /opt/ws-scrcpy
+COPY scrcpy-web/config.yaml /opt/ws-scrcpy/config.yaml
+COPY scrcpy-web/watch.html.template /opt/ws-scrcpy/watch.html.template
+COPY scrcpy-web/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+WORKDIR /opt/ws-scrcpy
+EXPOSE 8000
+ENTRYPOINT ["/entrypoint.sh"]

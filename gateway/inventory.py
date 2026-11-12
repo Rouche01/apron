@@ -105,11 +105,14 @@ def load_inventory_file(path: str | Path, *, vnc_defaults: Callable[[str], str] 
         seat_id = item.get("id")
         if seat_id is not None and (not isinstance(seat_id, str) or not seat_id.strip()):
             raise RuntimeError(f"inventory[{i}].id must be a non-empty string when set")
+        kind = _normalize_kind(item.get("kind"), index=i)
+        # Phone HITL is scrcpy-web (/watch.html), not noVNC — skip autoconnect/path injection.
+        vnc_url = vnc.strip() if kind == "phone" else vnc_defaults(vnc.strip())
         specs.append(
             WorkerSpec(
                 url=url.strip().rstrip("/"),
-                vnc_url=vnc_defaults(vnc.strip()),
-                kind=_normalize_kind(item.get("kind"), index=i),
+                vnc_url=vnc_url,
+                kind=kind,
                 id=seat_id.strip() if isinstance(seat_id, str) else None,
             )
         )

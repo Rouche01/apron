@@ -91,7 +91,7 @@ services:
       ADB_CONNECT: ${ADB_CONNECT:-}
       RESET_FORCE_STOP_PACKAGES: ${RESET_FORCE_STOP_PACKAGES:-}
       RECYCLE_CLEAR_PACKAGES: ${RECYCLE_CLEAR_PACKAGES:-}
-      SCRCPY_WEB_URL: ${PHONE_HITL_URL:-http://localhost:6083/}
+      SCRCPY_WEB_URL: ${PHONE_HITL_URL:-http://localhost:6083/watch.html}
     volumes:
       # Same RSA keys the host used to authorize the phone (otherwise wireless = unauthorized).
       - ${HOME}/.android:/root/.android
@@ -111,6 +111,45 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
+    restart: unless-stopped
+
+  # Browser HITL for phone seats (lease vnc_url → :6083). Same ADB as phone-1.
+  # Watch-only for dogfood; intervene via gateway actions / physical device.
+  scrcpy-web:
+    profiles: ["phone"]
+    build:
+      context: .
+      dockerfile: Dockerfile.scrcpy
+      args:
+        # Mel0nFish/ws-scrcpy-enhanced @ scrcpy-server 3.3.4 (Android 16 video)
+        WS_SCRCPY_REPO: ${WS_SCRCPY_REPO:-https://github.com/Mel0nFish/ws-scrcpy-enhanced.git}
+        WS_SCRCPY_REF: ${WS_SCRCPY_REF:-32e58f9aa330bb30454d9fe31251c550008fc373}
+    image: computer-with-agent-scrcpy:local
+    networks: [computer_internal]
+    ports:
+      - "6083:8000"
+    environment:
+      HOME: /root
+      ADB_SERIAL: ${ADB_SERIAL:-}
+      ADB_CONNECT: ${ADB_CONNECT:-}
+      WS_SCRCPY_CONFIG: /opt/ws-scrcpy/config.yaml
+    volumes:
+      - ${HOME}/.android:/root/.android
+    depends_on:
+      phone-1:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://127.0.0.1:8000/',(r)=>{r.resume();process.exit(r.statusCode&&r.statusCode<500?0:1)}).on('error',()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
     restart: unless-stopped
 
   gateway:
