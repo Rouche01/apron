@@ -65,6 +65,8 @@ Worker (internal): `GET /health`, `GET /screenshot`, `POST /action`, `POST /sess
 
 Phone worker env: `ADB_SERIAL` (required if multiple devices), `ADB_CONNECT` (optional `host:port`), `RESET_FORCE_STOP_PACKAGES` / `RECYCLE_CLEAR_PACKAGES` (comma package lists). Soft park → force-stop; recycle / idle wipe → `pm clear`. HITL URL is **scrcpy-web** in inventory `vnc_url` (not started by this image yet).
 
+Compose `phone-1` is on the bridge network (`http://phone-1:8003` in inventory) and mounts host `~/.android` (shared RSA keys). Authorize wireless on the **host** first (`adb connect ip:5555` + Allow prompt); set `ADB_SERIAL`/`ADB_CONNECT` to `ip:5555`.
+
 Pool states: **free** → **leased** → **parked** (idle TTL) → free after reset. Capacity is **fixed** (Compose workers), not on-demand.
 
 ## Conventions
@@ -115,7 +117,7 @@ ports:
   - "127.0.0.1:6082:6080"
 ```
 
-Set `GATEWAY_PUBLIC_BASE` and edit the inventory JSON `vnc_url`s to those hostnames (see `gateway/workers.hsv.example.json`). Keep desktop worker `url`s as Docker DNS; phone control URL stays `http://host.docker.internal:8003` when `phone-1` uses host networking.
+Set `GATEWAY_PUBLIC_BASE` and edit the inventory JSON `vnc_url`s to those hostnames (see `gateway/workers.hsv.example.json`). Keep desktop worker `url`s as Docker DNS; phone control URL is `http://phone-1:8003` when using the Compose `phone` profile (bridge).
 
 ## Relay OS
 
@@ -129,11 +131,15 @@ Agents can curl this gateway today. When Relay grows phone seats, keep inference
 | Relay surface | Suggested change (later) |
 |---------------|--------------------------|
 | `@relay/engines-computer` | Pass `kind: "phone"` on `POST /v1/sessions`. Forward phone action bodies (`swipe`, `long_press`, `launch`, `key` with `back`/`home`/`recents`, optional `ref`). Prefer `GET …/observe` when the loop is vision+tree; fall back to screenshot pixels for custom views (Reels, etc.). |
-| `@relay/browse-policy` (or phone system prompt) | Phone priors: swipe-heavy navigation, avoid desktop chords (`ctrl+l`), use `launch`/`uri` to open apps, `home`/`back` for system chrome. HITL via lease `vnc_url` (scrcpy-web). |
-| Desk / Settings | Inventory already exposes `kind` on `/v1/seats`; show phone seats separately from desktop noVNC. |
+| `@relay/browse-policy` (or phone system prompt) | Phone priors: swipe-heavy navigation, avoid desktop chords (`ctrl+l`), use `launch`/`uri` to open apps, `home`/`back` for system chrome. HITL **Watch** via lease `vnc_url` (scrcpy-web / `cu-phone.hsv`). |
+| Desk / Settings | Inventory already exposes `kind` on `/v1/seats`; show phone seats separately from desktop noVNC. Open `vnc_url` for read-only Watch. |
+| Desk take-over (intervene) | **relay-os Desk** — when `need_human`, drive via gateway `POST …/action` (same control plane as the agent), not by injecting clicks into scrcpy-web. Physical phone OK for local dogfood. |
+| ThinkPad Caddy / `cu-phone.hsv` | **Deploy + Desk docs** (`relay-os/apps/relay-desk/LAPTOP.md`) — live Caddyfile Host route → `127.0.0.1:6083`. This repo documents the snippet and ships `workers.hsv.example.json`; applying Caddy on the host is not a computer-with-agent code change. |
 | CommunityEngager | Stay **desktop evidence-only** unless an explicit phone transport is designed; do not silently lease `kind=phone` for Reddit. |
 
 Park/recycle semantics: phone park → soft force-stop (packages stay logged in); recycle → `pm clear` on configured packages — map Relay “job done” to recycle only when a clean app state is intended.
+
+Phone HITL Watch contract (this runtime): scrcpy-web on `:6083` is **read-only**; inventory `vnc_url` is localhost or `https://cu-phone.hsv/`. See `.cursor/plans/phone_scrcpy_web_hitl.plan.md`.
 
 ## Out of scope (for now)
 

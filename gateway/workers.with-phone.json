@@ -14,7 +14,7 @@
   {
     "id": "phone1",
     "kind": "phone",
-    "url": "http://host.docker.internal:8003",
+    "url": "http://phone-1:8003",
     "vnc_url": "http://localhost:6083/"
   }
 ]

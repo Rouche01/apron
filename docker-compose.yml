@@ -71,22 +71,30 @@ services:
     restart: unless-stopped
 
   # Third seat (kind=phone). Opt-in via profile so desktop-only deploys stay unchanged.
-  # Host networking: share host adb (USB or wireless). Control API on host :8003.
-  # Gateway reaches it via host.docker.internal (extra_hosts below).
+  # Bridge network (same as gateway/workers) so gateway can call http://phone-1:8003.
+  # Prefer wireless ADB (ADB_CONNECT=ip:5555) — Docker Desktop Mac cannot share USB
+  # via network_mode:host, and host.docker.internal:8003 does not reach host-network
+  # containers on Mac. Mount ~/.android so the phone trusts this adb key.
   phone-1:
     profiles: ["phone"]
     build:
       context: .
       dockerfile: Dockerfile.phone
     image: computer-with-agent-phone:local
-    network_mode: host
+    networks: [computer_internal]
+    ports:
+      - "8003:8003"
     environment:
       PORT: "8003"
+      HOME: /root
       ADB_SERIAL: ${ADB_SERIAL:-}
       ADB_CONNECT: ${ADB_CONNECT:-}
       RESET_FORCE_STOP_PACKAGES: ${RESET_FORCE_STOP_PACKAGES:-}
       RECYCLE_CLEAR_PACKAGES: ${RECYCLE_CLEAR_PACKAGES:-}
       SCRCPY_WEB_URL: ${PHONE_HITL_URL:-http://localhost:6083/}
+    volumes:
+      # Same RSA keys the host used to authorize the phone (otherwise wireless = unauthorized).
+      - ${HOME}/.android:/root/.android
     # USB device access is host/OS-specific; wireless ADB needs only network + adb connect.
     # devices:
     #   - /dev/bus/usb
