@@ -169,6 +169,8 @@ services:
       REQUIRE_WORKER_INVENTORY: "1"
       SESSION_TTL_SEC: ${SESSION_TTL_SEC:-600}
       PARKED_TTL_SEC: ${PARKED_TTL_SEC:-1800}
+      # Phone profile: sync Watch adb when POST /v1/seats/{id}/bind (internal :8001).
+      SCRCPY_ADB_API_URL: ${SCRCPY_ADB_API_URL:-http://scrcpy-web:8001}
     volumes:
       # Host file must exist (missing path → Docker mounts an empty dir → gateway exits).
       # With phone profile use: WORKER_INVENTORY_FILE=./gateway/workers.with-phone.json

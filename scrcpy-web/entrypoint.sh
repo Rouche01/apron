@@ -32,5 +32,7 @@ fs.writeFileSync("/opt/ws-scrcpy/public/watch.html", t.split("__ADB_SERIAL__").j
 '
 
 export WS_SCRCPY_CONFIG="${WS_SCRCPY_CONFIG:-/opt/ws-scrcpy/config.yaml}"
+# Internal bind API so gateway can adb-connect for Watch without recreating the container.
+node /opt/scrcpy-adb-api.js &
 cd /opt/ws-scrcpy
 exec node ./index.js

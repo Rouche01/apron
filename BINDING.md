@@ -149,13 +149,37 @@ Coordinates are **screenshot pixels** (device-reported size, e.g. 1080×2340). P
 | observe (HTTP) | `GET .../observe` → `{ image, elements[{ref,text,content_desc,bounds,center,clickable,…}] }` |
 | tap by ref | `{ "type":"tap", "ref":"e3" }` (re-dumps tree; prefers `resource-id` refs when unique) |
 
+### Bind your own phone to a seat
+
+Compose mounts host `~/.android` into `phone-1` and `scrcpy-web`. The human taps **Allow** / **Authorize this computer** once when that adb key first appears (USB or Wireless debugging). After that, Desk or curl can rebind without recreating containers. Bind is refused while the seat is **leased**.
+
+```bash
+# Optional: authorize on the host first (shows the Allow prompt on the phone)
+# adb connect 192.168.1.20:5555
+
+SEAT=phone1   # id from GET /v1/seats
+curl -s -H "$AUTH" "$GW/v1/seats/$SEAT/devices" | jq .
+
+# Wireless — connect + select (serial becomes ip:port)
+curl -s -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"connect":"192.168.1.20:5555"}' \
+  "$GW/v1/seats/$SEAT/bind" | jq '{ok, bound_serial, vnc_url, hint}'
+
+# Or USB serial already visible to adb
+# curl -s -H "$AUTH" -H 'Content-Type: application/json' \
+#   -d '{"serial":"R5CY53CAB6N"}' "$GW/v1/seats/$SEAT/bind" | jq .
+
+# If ok=false / unauthorized: tap Allow on the phone, then retry bind.
+# Lease vnc_url includes ?udid=… so Watch opens that device.
+```
+
 ```bash
 # Lease a phone seat (Compose profile phone + workers.with-phone.json)
 SESSION=$(curl -s -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"kind":"phone","agent_id":"demo","ttl_sec":600}' \
   "$GW/v1/sessions")
 SID=$(echo "$SESSION" | jq -r .session_id)
-# Watch: open .vnc_url (scrcpy-web /watch.html on :6083) — read-only HITL
+# Watch: open .vnc_url (scrcpy-web /watch.html?udid=… on :6083) — read-only HITL
 echo "$SESSION" | jq '{session_id, kind, vnc_url}'
 
 # Vision + tree

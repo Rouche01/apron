@@ -202,6 +202,100 @@ def list_seats(_: AuthDep):
     }
 
 
+class SeatBindBody(BaseModel):
+    """Bind a phone seat to a USB serial or wireless adb target."""
+
+    serial: str | None = Field(
+        default=None,
+        description="adb serial (USB id or ip:port after connect)",
+    )
+    connect: str | None = Field(
+        default=None,
+        description="Optional wireless host:port — runs adb connect, then binds",
+    )
+
+
+@app.get("/v1/seats/{seat_id}/devices", tags=["ops"])
+def seat_devices(seat_id: str, _: AuthDep):
+    """List adb devices visible to a phone seat (Desk bind UI)."""
+    slot = pool.get_seat(seat_id)
+    if not slot:
+        raise HTTPException(status_code=404, detail="seat not found")
+    if slot.kind != "phone":
+        raise HTTPException(status_code=400, detail="only phone seats expose devices")
+    status, data = pool.seat_proxy_get(seat_id, "/devices")
+    if status >= 400:
+        raise HTTPException(status_code=status, detail=data)
+    if isinstance(data, dict):
+        # Hydrate gateway slot from worker (survives gateway recreate).
+        bound = data.get("bound_serial")
+        if bound:
+            pool.set_seat_bound_serial(seat_id, str(bound))
+        slot = pool.get_seat(seat_id) or slot
+        data = {
+            **data,
+            "seat_id": seat_id,
+            "vnc_url": pool.effective_vnc(slot),
+            "state": slot.state,
+        }
+    return data
+
+
+@app.get("/v1/seats/{seat_id}/device", tags=["ops"])
+def seat_device(seat_id: str, _: AuthDep):
+    """Current bind status for a phone seat."""
+    slot = pool.get_seat(seat_id)
+    if not slot:
+        raise HTTPException(status_code=404, detail="seat not found")
+    if slot.kind != "phone":
+        raise HTTPException(status_code=400, detail="only phone seats expose device status")
+    status, data = pool.seat_proxy_get(seat_id, "/device")
+    if status >= 400:
+        raise HTTPException(status_code=status, detail=data)
+    if isinstance(data, dict):
+        bound = data.get("bound_serial")
+        if bound:
+            pool.set_seat_bound_serial(seat_id, str(bound))
+        slot = pool.get_seat(seat_id) or slot
+        data = {
+            **data,
+            "seat_id": seat_id,
+            "bound_serial": slot.bound_serial or data.get("bound_serial"),
+            "vnc_url": pool.effective_vnc(slot),
+            "state": slot.state,
+        }
+    return data
+
+
+@app.post("/v1/seats/{seat_id}/bind", tags=["ops"])
+def seat_bind(seat_id: str, body: SeatBindBody, _: AuthDep):
+    """Bind a phone seat to a device without recreating containers.
+
+    Human must tap Allow / Authorize on the phone the first time this host's
+    adb keys appear (Compose mounts ~/.android into phone-1 + scrcpy-web).
+    Refuses while the seat is leased.
+    """
+    if not (body.serial or "").strip() and not (body.connect or "").strip():
+        raise HTTPException(status_code=400, detail="serial and/or connect required")
+    status, data = pool.bind_phone_seat(
+        seat_id,
+        serial=(body.serial or "").strip() or None,
+        connect=(body.connect or "").strip() or None,
+    )
+    if status >= 400:
+        raise HTTPException(status_code=status, detail=data)
+    return data
+
+
+@app.post("/v1/seats/{seat_id}/unbind", tags=["ops"])
+def seat_unbind(seat_id: str, _: AuthDep):
+    """Clear runtime bind; fall back to ADB_SERIAL env on the phone worker."""
+    status, data = pool.unbind_phone_seat(seat_id)
+    if status >= 400:
+        raise HTTPException(status_code=status, detail=data)
+    return data
+
+
 @app.get("/ready", tags=["ops"])
 def ready():
     """200 when at least one worker is free and a healthy worker exists."""

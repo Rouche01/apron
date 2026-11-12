@@ -52,8 +52,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /build/dist /opt/ws-scrcpy
 COPY scrcpy-web/config.yaml /opt/ws-scrcpy/config.yaml
 COPY scrcpy-web/watch.html.template /opt/ws-scrcpy/watch.html.template
+COPY scrcpy-web/adb-api.js /opt/scrcpy-adb-api.js
 COPY scrcpy-web/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh /opt/scrcpy-adb-api.js
 
 WORKDIR /opt/ws-scrcpy
 EXPOSE 8000

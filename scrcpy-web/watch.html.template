@@ -13,10 +13,11 @@
   <p id="msg">Opening device stream…</p>
   <script>
 (function () {
-  var serial = "__ADB_SERIAL__";
+  var params = new URLSearchParams(location.search);
+  var serial = params.get("udid") || params.get("serial") || "__ADB_SERIAL__";
   if (!serial) {
     document.getElementById("msg").textContent =
-      "ADB_SERIAL unset — opening device list.";
+      "No device serial — opening device list. Bind via gateway or pick a stream here.";
     location.replace("/");
     return;
   }

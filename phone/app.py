@@ -43,6 +43,96 @@ def _clear_packages() -> list[str]:
     return cleared or _force_stop_packages()
 
 
+class BindBody(BaseModel):
+    """Bind this seat to a device visible to the worker's adb."""
+
+    serial: str | None = None
+    connect: str | None = None  # optional wireless host:port (adb connect)
+
+
+@app.get("/devices")
+def list_devices():
+    """All transports adb currently sees (for Desk bind UI)."""
+    try:
+        found = adbutil.devices()
+    except adbutil.AdbError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    return {
+        "ok": True,
+        "bound_serial": adbutil.get_bound_serial(),
+        "devices": found,
+    }
+
+
+@app.get("/device")
+def device_status():
+    """Current bind + selected device (if ready)."""
+    try:
+        found = adbutil.devices()
+    except adbutil.AdbError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    selected = adbutil.selected_device()
+    return {
+        "ok": True,
+        "bound_serial": adbutil.get_bound_serial(),
+        "adb_serial_env": os.environ.get("ADB_SERIAL", "").strip() or None,
+        "selected": selected,
+        "devices": found,
+    }
+
+
+@app.post("/device/bind")
+def device_bind(body: BindBody):
+    """Runtime bind: optional adb connect, then select serial for all worker actions.
+
+    Human must Authorize / Allow wireless debugging on the phone once (host or
+    this container's adb keys via mounted ~/.android). After that, Desk can
+    rebind without recreating containers.
+    """
+    serial = (body.serial or "").strip() or None
+    connect = (body.connect or "").strip() or None
+    if not serial and not connect:
+        raise HTTPException(status_code=400, detail="serial and/or connect required")
+
+    connect_out = None
+    try:
+        if connect:
+            connect_out = adbutil.adb_connect(connect)
+            if not serial:
+                # Common wireless form: serial == connect target (ip:5555).
+                serial = connect
+        bound = adbutil.set_bound_serial(serial)
+        selected = adbutil.selected_device()
+    except adbutil.AdbError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+    ready = bool(selected and selected.get("state") == "device")
+    return {
+        "ok": ready,
+        "bound_serial": bound,
+        "connect": connect,
+        "connect_result": connect_out,
+        "selected": selected,
+        "devices": adbutil.devices(),
+        "hint": None
+        if ready
+        else "device not in 'device' state — authorize USB/wireless Allow on the phone, then retry",
+    }
+
+
+@app.post("/device/unbind")
+def device_unbind():
+    """Clear runtime bind; fall back to ADB_SERIAL env (if set)."""
+    bound = adbutil.set_bound_serial(None)
+    return {
+        "ok": True,
+        "bound_serial": bound,
+        "adb_serial_env": os.environ.get("ADB_SERIAL", "").strip() or None,
+        "selected": adbutil.selected_device(),
+        "devices": adbutil.devices(),
+    }
+
+
 @app.get("/health")
 def health():
     """adbd + selected device; optional scrcpy-web URL is inventory-side (HITL)."""
@@ -61,6 +151,7 @@ def health():
     selected = adbutil.selected_device()
     serial_env = os.environ.get("ADB_SERIAL", "").strip() or None
     detail["adb_serial_env"] = serial_env
+    detail["bound_serial"] = adbutil.get_bound_serial()
 
     if not selected:
         checks["device"] = False

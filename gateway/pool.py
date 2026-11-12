@@ -8,17 +8,22 @@ Worker states:
 
 from __future__ import annotations
 
+import os
 import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import httpx
 
 from inventory import SeatKind, WorkerSpec
 
 SlotState = Literal["free", "leased", "parked"]
+
+# Internal scrcpy-web ADB bind API (Compose phone profile). Empty → skip Watch sync.
+SCRCPY_ADB_API_URL = os.environ.get("SCRCPY_ADB_API_URL", "").strip().rstrip("/")
 
 
 def _utcnow() -> datetime:
@@ -27,6 +32,25 @@ def _utcnow() -> datetime:
 
 def _clamp_ttl(ttl: int, *, minimum: int = 30) -> int:
     return ttl if ttl >= minimum else minimum
+
+
+def vnc_url_with_udid(base_vnc: str, serial: str | None) -> str:
+    """Attach ?udid= to phone watch URLs so HITL opens the bound device."""
+    if not serial or not base_vnc:
+        return base_vnc
+    parsed = urlparse(base_vnc)
+    path = parsed.path or ""
+    # Leave desktop noVNC alone.
+    if "vnc.html" in path:
+        return base_vnc
+    qs = parse_qs(parsed.query, keep_blank_values=True)
+    qs["udid"] = [serial]
+    # Drop stale serial= if present; udid is canonical for watch.html.
+    qs.pop("serial", None)
+    new_query = urlencode({k: v[-1] if isinstance(v, list) else v for k, v in qs.items()})
+    return urlunparse(
+        (parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment)
+    )
 
 
 @dataclass
@@ -41,6 +65,8 @@ class WorkerSlot:
     job_id: str | None = None
     expires_at: datetime | None = None  # lease TTL; only while leased
     parked_at: datetime | None = None  # parked idle clock
+    bound_serial: str | None = None  # phone runtime bind (Watch udid)
+    inventory_vnc_url: str = ""  # original inventory vnc_url (before udid rewrite)
 
 
 @dataclass
@@ -83,6 +109,7 @@ class SessionPool:
                     WorkerSlot(
                         base_url=w.url.rstrip("/"),
                         vnc_url=w.vnc_url,
+                        inventory_vnc_url=w.vnc_url,
                         kind=w.kind,
                         seat_id=w.id or f"desk{i + 1}",
                     )
@@ -93,6 +120,7 @@ class SessionPool:
                     WorkerSlot(
                         base_url=u.rstrip("/"),
                         vnc_url=v,
+                        inventory_vnc_url=v,
                         kind="desktop",
                         seat_id=f"desk{i + 1}",
                     )
@@ -106,12 +134,21 @@ class SessionPool:
     def parked_ttl_sec(self) -> int:
         return self._parked_ttl
 
+    def effective_vnc(self, slot: WorkerSlot) -> str:
+        base = slot.inventory_vnc_url or slot.vnc_url
+        if slot.kind == "phone" and slot.bound_serial:
+            return vnc_url_with_udid(base, slot.bound_serial)
+        return slot.vnc_url
+
+    def _effective_vnc(self, slot: WorkerSlot) -> str:
+        return self.effective_vnc(slot)
+
     def _lease_info(self, slot: WorkerSlot) -> LeaseInfo:
         assert slot.session_id is not None and slot.expires_at is not None
         return LeaseInfo(
             session_id=slot.session_id,
             worker_base_url=slot.base_url,
-            vnc_url=slot.vnc_url,
+            vnc_url=self._effective_vnc(slot),
             expires_at=slot.expires_at,
             kind=slot.kind,
             seat_id=slot.seat_id,
@@ -195,7 +232,7 @@ class SessionPool:
                     "id": slot.seat_id,
                     "kind": slot.kind,
                     "state": slot.state,
-                    "vnc_url": slot.vnc_url,
+                    "vnc_url": self._effective_vnc(slot),
                     "worker_base_url": slot.base_url,
                     "session_id": slot.session_id,
                     "agent_id": slot.agent_id,
@@ -203,6 +240,8 @@ class SessionPool:
                     "expires_at": slot.expires_at.isoformat() if slot.expires_at else None,
                     "parked_at": slot.parked_at.isoformat() if slot.parked_at else None,
                 }
+                if slot.kind == "phone":
+                    seat["bound_serial"] = slot.bound_serial
                 seats.append(seat)
             return seats
 
@@ -296,7 +335,7 @@ class SessionPool:
             return LeaseInfo(
                 session_id=session_id,
                 worker_base_url=slot.base_url,
-                vnc_url=slot.vnc_url,
+                vnc_url=self._effective_vnc(slot),
                 expires_at=now,
                 kind=slot.kind,
                 seat_id=slot.seat_id,
@@ -329,6 +368,192 @@ class SessionPool:
             if slot.session_id == session_id:
                 return slot
         return None
+
+    def _find_seat_locked(self, seat_id: str) -> WorkerSlot | None:
+        for slot in self._slots:
+            if slot.seat_id == seat_id:
+                return slot
+        return None
+
+    def get_seat(self, seat_id: str) -> WorkerSlot | None:
+        with self._lock:
+            self._park_expired_leases_locked(_utcnow())
+            return self._find_seat_locked(seat_id)
+
+    def set_seat_bound_serial(self, seat_id: str, serial: str | None) -> str | None:
+        """Remember phone bind for lease/seat vnc_url (?udid=)."""
+        with self._lock:
+            slot = self._find_seat_locked(seat_id)
+            if not slot or slot.kind != "phone":
+                return None
+            slot.bound_serial = str(serial).strip() if serial else None
+            slot.vnc_url = self.effective_vnc(slot)
+            return slot.vnc_url
+
+    def seat_proxy_get(self, seat_id: str, path: str) -> tuple[int, Any]:
+        slot = self.get_seat(seat_id)
+        if not slot:
+            return 404, {"detail": "seat not found"}
+        with httpx.Client(timeout=self._timeout) as client:
+            r = client.get(f"{slot.base_url}{path}")
+            try:
+                data = r.json()
+            except Exception:
+                data = {"detail": r.text}
+            return r.status_code, data
+
+    def seat_proxy_post(
+        self, seat_id: str, path: str, body: dict | None = None
+    ) -> tuple[int, Any]:
+        slot = self.get_seat(seat_id)
+        if not slot:
+            return 404, {"detail": "seat not found"}
+        with httpx.Client(timeout=self._timeout) as client:
+            r = client.post(f"{slot.base_url}{path}", json=body or {})
+            try:
+                data = r.json()
+            except Exception:
+                data = {"detail": r.text}
+            return r.status_code, data
+
+    def bind_phone_seat(
+        self,
+        seat_id: str,
+        *,
+        serial: str | None = None,
+        connect: str | None = None,
+    ) -> tuple[int, dict[str, Any]]:
+        """Bind a phone seat's worker (+ optional scrcpy-web) to a device.
+
+        Refuses while the seat is leased (agent has exclusive claim).
+        """
+        with self._lock:
+            self._park_expired_leases_locked(_utcnow())
+            slot = self._find_seat_locked(seat_id)
+            if not slot:
+                return 404, {"ok": False, "detail": "seat not found"}
+            if slot.kind != "phone":
+                return 400, {"ok": False, "detail": "only phone seats support device bind"}
+            if slot.state == "leased":
+                return 409, {
+                    "ok": False,
+                    "detail": "seat is leased — release or recycle before rebinding",
+                    "session_id": slot.session_id,
+                }
+            worker_url = slot.base_url
+
+        body: dict[str, Any] = {}
+        if serial:
+            body["serial"] = serial
+        if connect:
+            body["connect"] = connect
+
+        with httpx.Client(timeout=self._timeout) as client:
+            try:
+                r = client.post(f"{worker_url}/device/bind", json=body)
+                try:
+                    data = r.json()
+                except Exception:
+                    data = {"detail": r.text}
+            except httpx.HTTPError as e:
+                return 503, {"ok": False, "detail": f"phone worker unreachable: {e}"}
+
+        if r.status_code >= 400:
+            detail = data if isinstance(data, dict) else {"detail": data}
+            if isinstance(detail, dict) and "ok" not in detail:
+                detail = {"ok": False, **detail}
+            return r.status_code, detail  # type: ignore[return-value]
+
+        bound = None
+        if isinstance(data, dict):
+            bound = data.get("bound_serial") or serial or connect
+
+        scrcpy: dict[str, Any] | None = None
+        if SCRCPY_ADB_API_URL and (serial or connect):
+            try:
+                with httpx.Client(timeout=self._timeout) as client:
+                    sr = client.post(f"{SCRCPY_ADB_API_URL}/device/bind", json=body)
+                    try:
+                        scrcpy = sr.json()
+                    except Exception:
+                        scrcpy = {"ok": False, "detail": sr.text}
+                    scrcpy["http_status"] = sr.status_code
+            except httpx.HTTPError as e:
+                scrcpy = {"ok": False, "detail": f"scrcpy adb-api unreachable: {e}"}
+
+        with self._lock:
+            slot = self._find_seat_locked(seat_id)
+            if slot:
+                slot.bound_serial = str(bound).strip() if bound else None
+                slot.vnc_url = self._effective_vnc(slot)
+                vnc = slot.vnc_url
+            else:
+                vnc = None
+
+        out: dict[str, Any] = {
+            "ok": bool(isinstance(data, dict) and data.get("ok", True)),
+            "seat_id": seat_id,
+            "bound_serial": bound,
+            "vnc_url": vnc,
+            "worker": data,
+        }
+        if scrcpy is not None:
+            out["scrcpy"] = scrcpy
+        if isinstance(data, dict) and data.get("hint"):
+            out["hint"] = data["hint"]
+        return 200 if out["ok"] else 503, out
+
+    def unbind_phone_seat(self, seat_id: str) -> tuple[int, dict[str, Any]]:
+        with self._lock:
+            self._park_expired_leases_locked(_utcnow())
+            slot = self._find_seat_locked(seat_id)
+            if not slot:
+                return 404, {"ok": False, "detail": "seat not found"}
+            if slot.kind != "phone":
+                return 400, {"ok": False, "detail": "only phone seats support device bind"}
+            if slot.state == "leased":
+                return 409, {
+                    "ok": False,
+                    "detail": "seat is leased — release or recycle before unbinding",
+                    "session_id": slot.session_id,
+                }
+            worker_url = slot.base_url
+
+        with httpx.Client(timeout=self._timeout) as client:
+            try:
+                r = client.post(f"{worker_url}/device/unbind", json={})
+                try:
+                    data = r.json()
+                except Exception:
+                    data = {"detail": r.text}
+            except httpx.HTTPError as e:
+                return 503, {"ok": False, "detail": f"phone worker unreachable: {e}"}
+
+        if r.status_code >= 400:
+            return r.status_code, data if isinstance(data, dict) else {"ok": False, "detail": data}
+
+        bound_serial: str | None = None
+        with self._lock:
+            slot = self._find_seat_locked(seat_id)
+            if slot:
+                # Fall back to worker-reported bound (env ADB_SERIAL) if any.
+                env_serial = None
+                if isinstance(data, dict):
+                    env_serial = data.get("bound_serial") or data.get("adb_serial_env")
+                slot.bound_serial = str(env_serial).strip() if env_serial else None
+                slot.vnc_url = self._effective_vnc(slot)
+                bound_serial = slot.bound_serial
+                vnc = slot.vnc_url
+            else:
+                vnc = None
+
+        return 200, {
+            "ok": True,
+            "seat_id": seat_id,
+            "bound_serial": bound_serial,
+            "vnc_url": vnc,
+            "worker": data,
+        }
 
     def proxy_get(self, session_id: str, path: str) -> tuple[int, Any]:
         slot = self.worker_for(session_id)

@@ -7,6 +7,10 @@ import re
 import subprocess
 from typing import Sequence
 
+# Runtime bind overrides boot env (gateway POST /device/bind). None = use ADB_SERIAL env.
+_runtime_serial: str | None = None
+_runtime_serial_set: bool = False
+
 
 class AdbError(RuntimeError):
     def __init__(self, message: str, *, stderr: str = "", returncode: int | None = None):
@@ -16,8 +20,51 @@ class AdbError(RuntimeError):
 
 
 def _serial() -> str | None:
+    if _runtime_serial_set:
+        return _runtime_serial
     s = os.environ.get("ADB_SERIAL", "").strip()
     return s or None
+
+
+def get_bound_serial() -> str | None:
+    """Active serial used for adb -s (runtime bind or ADB_SERIAL env)."""
+    return _serial()
+
+
+def set_bound_serial(serial: str | None) -> str | None:
+    """Bind this worker to a device serial. Empty/None clears runtime override (back to env)."""
+    global _runtime_serial, _runtime_serial_set
+    if serial is None or not str(serial).strip():
+        _runtime_serial = None
+        _runtime_serial_set = False
+        return _serial()
+    _runtime_serial = str(serial).strip()
+    _runtime_serial_set = True
+    return _runtime_serial
+
+
+def adb_connect(hostport: str) -> str:
+    """Wireless adb connect (host must already have authorized the device once)."""
+    target = hostport.strip()
+    if not target:
+        raise AdbError("connect target is empty")
+    # Bare adb (no -s) so we can attach a new transport.
+    try:
+        r = subprocess.run(
+            ["adb", "connect", target],
+            check=False,
+            capture_output=True,
+            timeout=20,
+            text=True,
+        )
+    except FileNotFoundError as e:
+        raise AdbError("adb not found on PATH — install Android platform-tools") from e
+    except subprocess.TimeoutExpired as e:
+        raise AdbError(f"adb connect timed out: {target}") from e
+    out = ((r.stdout or "") + (r.stderr or "")).strip()
+    if r.returncode != 0 and "connected" not in out.lower():
+        raise AdbError(f"adb connect failed: {out or r.returncode}", stderr=out, returncode=r.returncode)
+    return out or f"connected to {target}"
 
 
 def adb_prefix() -> list[str]:
@@ -61,10 +108,28 @@ def run_adb(
 
 
 def devices() -> list[dict[str, str]]:
-    r = run_adb(["devices", "-l"], timeout=10)
-    assert isinstance(r.stdout, str)
+    """List all adb transports (bare adb — not scoped to the bound serial)."""
+    try:
+        r = subprocess.run(
+            ["adb", "devices", "-l"],
+            check=False,
+            capture_output=True,
+            timeout=10,
+            text=True,
+        )
+    except FileNotFoundError as e:
+        raise AdbError("adb not found on PATH — install Android platform-tools") from e
+    except subprocess.TimeoutExpired as e:
+        raise AdbError("adb devices timed out") from e
+    if r.returncode != 0:
+        err = ((r.stderr or "") + (r.stdout or "")).strip()
+        raise AdbError(
+            f"adb devices failed: {err or r.returncode}",
+            stderr=err,
+            returncode=r.returncode,
+        )
     out: list[dict[str, str]] = []
-    for line in r.stdout.splitlines()[1:]:
+    for line in (r.stdout or "").splitlines()[1:]:
         line = line.strip()
         if not line:
             continue
