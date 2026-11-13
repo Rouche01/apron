@@ -12,6 +12,10 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 SeatKind = Literal["desktop", "phone"]
 VALID_KINDS: frozenset[str] = frozenset({"desktop", "phone"})
 
+# Inventory provider ids for cloud phone seats (CloudPhoneProvider registry).
+# Physical phone seats omit provider. Expand when registering a new impl.
+KNOWN_CLOUD_PROVIDERS: frozenset[str] = frozenset({"phone-harness"})
+
 
 @dataclass(frozen=True)
 class WorkerSpec:
@@ -19,6 +23,8 @@ class WorkerSpec:
     vnc_url: str
     kind: SeatKind = "desktop"
     id: str | None = None
+    # Cloud phone tooling id (e.g. phone-harness). None = physical / local ADB bind.
+    provider: str | None = None
 
 
 def with_vnc_view_defaults(url: str) -> str:
@@ -50,6 +56,30 @@ def _normalize_kind(raw: object, *, index: int) -> SeatKind:
     return raw  # type: ignore[return-value]
 
 
+def _normalize_provider(
+    raw: object, *, kind: SeatKind, index: int
+) -> str | None:
+    """Optional cloud provider on phone seats only."""
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(
+            f"inventory[{index}].provider must be a non-empty string when set"
+        )
+    provider = raw.strip()
+    if kind != "phone":
+        raise ValueError(
+            f"inventory[{index}].provider is only valid when kind is 'phone' "
+            f"(got kind={kind!r}, provider={provider!r})"
+        )
+    if provider not in KNOWN_CLOUD_PROVIDERS:
+        raise ValueError(
+            f"inventory[{index}].provider must be one of "
+            f"{sorted(KNOWN_CLOUD_PROVIDERS)}, got {provider!r}"
+        )
+    return provider
+
+
 def _assign_default_ids(specs: list[WorkerSpec]) -> list[WorkerSpec]:
     """Fill missing ids: desk1… / phone1… per kind order."""
     counters: dict[SeatKind, int] = {"desktop": 0, "phone": 0}
@@ -66,6 +96,7 @@ def _assign_default_ids(specs: list[WorkerSpec]) -> list[WorkerSpec]:
                 vnc_url=spec.vnc_url,
                 kind=spec.kind,
                 id=f"{prefix}{counters[spec.kind]}",
+                provider=spec.provider,
             )
         )
     return out
@@ -106,7 +137,11 @@ def load_inventory_file(path: str | Path, *, vnc_defaults: Callable[[str], str] 
         if seat_id is not None and (not isinstance(seat_id, str) or not seat_id.strip()):
             raise RuntimeError(f"inventory[{i}].id must be a non-empty string when set")
         kind = _normalize_kind(item.get("kind"), index=i)
-        # Phone HITL is scrcpy-web (/watch.html), not noVNC — skip autoconnect/path injection.
+        try:
+            provider = _normalize_provider(item.get("provider"), kind=kind, index=i)
+        except ValueError as e:
+            raise RuntimeError(str(e)) from e
+        # Phone HITL is scrcpy-web (/watch.html) or cloud watch_url — skip noVNC defaults.
         vnc_url = vnc.strip() if kind == "phone" else vnc_defaults(vnc.strip())
         specs.append(
             WorkerSpec(
@@ -114,6 +149,7 @@ def load_inventory_file(path: str | Path, *, vnc_defaults: Callable[[str], str] 
                 vnc_url=vnc_url,
                 kind=kind,
                 id=seat_id.strip() if isinstance(seat_id, str) else None,
+                provider=provider,
             )
         )
 
