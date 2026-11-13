@@ -168,9 +168,21 @@ def health():
     serial_env = os.environ.get("ADB_SERIAL", "").strip() or None
     detail["adb_serial_env"] = serial_env
     detail["bound_serial"] = adbutil.get_bound_serial()
+    # Cloud seats: healthy with adb only until gateway binds after lease.
+    allow_empty = os.environ.get("ALLOW_EMPTY_DEVICE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    detail["allow_empty_device"] = allow_empty
 
     if not selected:
         checks["device"] = False
+        if allow_empty:
+            checks["adb"] = True
+            detail["ok"] = True
+            detail["hint"] = "no device yet — waiting for gateway cloud bind"
+            return detail
         detail["error"] = "no device in 'device' state" + (
             f" matching ADB_SERIAL={serial_env}" if serial_env else ""
         )

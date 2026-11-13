@@ -1,10 +1,19 @@
 # Computer Runtime: gateway (public) + exclusive desktop workers (internal).
-# Optional phone seat: profile "phone" (third worker; see gateway/workers.with-phone.json).
+# Optional physical phone: profile "phone" (see gateway/workers.with-phone.json).
+# Optional cloud phone: profile "phone-cloud" (see gateway/workers.with-phone-cloud.json).
 # Lease/TTL recycle is handled by the gateway; release calls worker /session/reset.
 #
 #   docker compose up --build
-#   # with Android seat (wireless/USB ADB on the host):
+#   # physical Android (wireless/USB ADB on the host):
 #   COMPOSE_PROFILES=phone WORKER_INVENTORY_FILE=./gateway/workers.with-phone.json \
+#     docker compose up --build -d
+#   # cloud Android (Phone Harness) — needs PHONE_HARNESS_API_KEY in .env:
+#   COMPOSE_PROFILES=phone-cloud \
+#     WORKER_INVENTORY_FILE=./gateway/workers.with-phone-cloud.json \
+#     docker compose up --build -d
+#   # both physical + cloud:
+#   COMPOSE_PROFILES=phone,phone-cloud \
+#     WORKER_INVENTORY_FILE=./gateway/workers.with-phone-cloud.json \
 #     docker compose up --build -d
 #   export COMPUTER_API_TOKEN=dev-token   # must match .env
 #   curl -s -H "Authorization: Bearer $COMPUTER_API_TOKEN" \
@@ -152,6 +161,38 @@ services:
       start_period: 45s
     restart: unless-stopped
 
+  # Cloud phone seat (kind=phone, provider=phone-harness). Bound on lease — no
+  # host ADB keys / scrcpy. Opt-in via profile phone-cloud.
+  phone-cloud-1:
+    profiles: ["phone-cloud"]
+    build:
+      context: .
+      dockerfile: Dockerfile.phone
+    image: computer-with-agent-phone:local
+    networks: [computer_internal]
+    ports:
+      - "8004:8003"
+    environment:
+      PORT: "8003"
+      HOME: /root
+      # Healthy before first lease (gateway provisions + bind).
+      ALLOW_EMPTY_DEVICE: "1"
+      RESET_FORCE_STOP_PACKAGES: ${RESET_FORCE_STOP_PACKAGES:-}
+      RECYCLE_CLEAR_PACKAGES: ${RECYCLE_CLEAR_PACKAGES:-}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=3)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
   gateway:
     build:
       context: .
@@ -171,9 +212,15 @@ services:
       PARKED_TTL_SEC: ${PARKED_TTL_SEC:-1800}
       # Phone profile: sync Watch adb when POST /v1/seats/{id}/bind (internal :8001).
       SCRCPY_ADB_API_URL: ${SCRCPY_ADB_API_URL:-http://scrcpy-web:8001}
+      # Cloud phone provider (profile phone-cloud / inventory provider=phone-harness).
+      PHONE_HARNESS_API_KEY: ${PHONE_HARNESS_API_KEY:-}
+      PHONE_HARNESS_API_BASE: ${PHONE_HARNESS_API_BASE:-https://api.phone-harness.com}
+      PHONE_HARNESS_TIMEOUT_SEC: ${PHONE_HARNESS_TIMEOUT_SEC:-}
+      PHONE_HARNESS_PROFILE_ID: ${PHONE_HARNESS_PROFILE_ID:-}
     volumes:
       # Host file must exist (missing path → Docker mounts an empty dir → gateway exits).
-      # With phone profile use: WORKER_INVENTORY_FILE=./gateway/workers.with-phone.json
+      # Physical phone: WORKER_INVENTORY_FILE=./gateway/workers.with-phone.json
+      # Cloud / both: WORKER_INVENTORY_FILE=./gateway/workers.with-phone-cloud.json
       - ${WORKER_INVENTORY_FILE:-./gateway/workers.json}:/etc/computer/workers.json:ro
     depends_on:
       worker-1:
