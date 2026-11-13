@@ -1,0 +1,20 @@
+{
+  "id": "abc123def456",
+  "state": "provisioning",
+  "platform": "android",
+  "kind": "emulator",
+  "device": "Android emulator",
+  "close_requested": null,
+  "cleanup_pending": false,
+  "cleanup_status": null,
+  "billing_mode": "metered",
+  "phone": null,
+  "watch_url": "https://viewer.example.com/opaque-read-only-link",
+  "screen": null,
+  "age_s": 0,
+  "ready_age_s": 0,
+  "idle_s": 0,
+  "expires_at": 1800000900,
+  "timeout_seconds": 900,
+  "adb": null
+}

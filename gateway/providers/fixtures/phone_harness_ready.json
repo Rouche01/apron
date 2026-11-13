@@ -1,0 +1,25 @@
+{
+  "id": "abc123def456",
+  "state": "ready",
+  "platform": "android",
+  "kind": "emulator",
+  "device": "Android emulator",
+  "close_requested": null,
+  "cleanup_pending": false,
+  "cleanup_status": null,
+  "billing_mode": "metered",
+  "phone": null,
+  "watch_url": "https://viewer.example.com/opaque-read-only-link",
+  "screen": {"w": 1080, "h": 2400},
+  "age_s": 85,
+  "ready_age_s": 5,
+  "idle_s": 0,
+  "expires_at": 1800000900,
+  "timeout_seconds": 900,
+  "adb": {
+    "host": "live.phone-harness.com",
+    "port": 22220,
+    "code": "ph_mfwcc5nknqaod034nwojzw0lzq",
+    "expires_at": 1800000900
+  }
+}
