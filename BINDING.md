@@ -4,7 +4,7 @@ Inference stays **outside** this project. Your agent leases a seat, loops (scree
 
 Default display (desktop): **1280×800**. Gateway: `http://localhost:9000` (Compose).
 
-Seat **kind** (inventory JSON via `WORKER_INVENTORY_PATH`): `desktop` (default) or `phone`. `POST /v1/sessions` body field `kind` selects the pool; omit it for desktop. Lease response includes `kind` and `seat_id`.
+Seat **kind** (inventory JSON via `WORKER_INVENTORY_PATH`): `desktop` (default) or `phone`. Optional inventory `provider` (e.g. `phone-harness`) marks a cloud phone seat — same `kind: phone` lease for agents; gateway provisions ADB + `watch_url`. `POST /v1/sessions` body field `kind` selects the pool; omit it for desktop. Lease response includes `kind` and `seat_id`.
 
 **Relay OS:** phase 1 needs no Relay package changes — bind with HTTP as below. Later work in `@relay/engines-computer` / browse-policy is sketched under **Relay OS → Downstream bind notes** in [`AGENTS.md`](AGENTS.md).
 
@@ -149,9 +149,9 @@ Coordinates are **screenshot pixels** (device-reported size, e.g. 1080×2340). P
 | observe (HTTP) | `GET .../observe` → `{ image, elements[{ref,text,content_desc,bounds,center,clickable,…}] }` |
 | tap by ref | `{ "type":"tap", "ref":"e3" }` (re-dumps tree; prefers `resource-id` refs when unique) |
 
-### Bind your own phone to a seat
+### Bind your own phone to a seat (physical)
 
-Compose mounts host `~/.android` into `phone-1` and `scrcpy-web`. The human taps **Allow** / **Authorize this computer** once when that adb key first appears (USB or Wireless debugging). After that, Desk or curl can rebind without recreating containers. Bind is refused while the seat is **leased**.
+Compose mounts host `~/.android` into `phone-1` and `scrcpy-web`. The human taps **Allow** / **Authorize this computer** once when that adb key first appears (USB or Wireless debugging). After that, Desk or curl can rebind without recreating containers. Bind is refused while the seat is **leased**, and refused entirely on **cloud** seats (`provider` set).
 
 ```bash
 # Optional: authorize on the host first (shows the Allow prompt on the phone)
@@ -173,8 +173,42 @@ curl -s -H "$AUTH" -H 'Content-Type: application/json' \
 # Lease vnc_url includes ?udid=… so Watch opens that device.
 ```
 
+### Cloud phone (Phone Harness) dogfood
+
+Inventory seat with `"provider": "phone-harness"` (see `gateway/workers.with-phone-cloud.json`). Agents still lease `kind: "phone"` — no agent API change. Soft park keeps billing; recycle tears down the harness session.
+
 ```bash
-# Lease a phone seat (Compose profile phone + workers.with-phone.json)
+# .env: COMPOSE_PROFILES=phone-cloud
+#       WORKER_INVENTORY_FILE=./gateway/workers.with-phone-cloud.json
+#       PHONE_HARNESS_API_KEY=pck_…
+# docker compose up --build -d
+
+curl -s -H "$AUTH" "$GW/v1/seats" | jq '.seats[] | {id, kind, provider, state, vnc_url}'
+
+# If physical phone1 is also free, lease may claim it first — recycle/park it or
+# use only phone-cloud inventory / free the physical seat first.
+SESSION=$(curl -s -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"kind":"phone","agent_id":"cloud-demo","ttl_sec":600}' \
+  "$GW/v1/sessions")
+echo "$SESSION" | jq '{session_id, seat_id, kind, vnc_url}'
+SID=$(echo "$SESSION" | jq -r .session_id)
+# Open .vnc_url in a browser — provider watch_url (view-only). No Allow prompt.
+
+curl -s -H "$AUTH" "$GW/v1/sessions/$SID/observe" | jq '{geometry, element_count}'
+curl -s -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"type":"key","text":"home"}' \
+  "$GW/v1/sessions/$SID/action"
+
+# Soft park (cloud session kept):
+# curl -s -H "$AUTH" -X DELETE "$GW/v1/sessions/$SID"
+# Job done — teardown cloud + free seat (stops billing):
+curl -s -H "$AUTH" -X DELETE "$GW/v1/sessions/$SID?recycle=true"
+```
+
+Adding another ADB+watch cloud vendor: implement `CloudPhoneProvider` in `gateway/providers/`, register it, extend `KNOWN_CLOUD_PROVIDERS`, set inventory `provider`.
+
+```bash
+# Lease a physical phone seat (Compose profile phone + workers.with-phone.json)
 SESSION=$(curl -s -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"kind":"phone","agent_id":"demo","ttl_sec":600}' \
   "$GW/v1/sessions")

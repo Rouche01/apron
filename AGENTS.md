@@ -16,7 +16,8 @@ Sibling consumer: `~/Projects/relay-os` (`@relay/engines-computer`, CommunityEng
 | `Dockerfile.phone` + `phone/` | **Phone worker** — ADB screenshot/tap/swipe/key/launch, soft/hard reset `:8000` |
 | `Dockerfile.scrcpy` + `scrcpy-web/` | **Phone HITL** — Mel0nFish/ws-scrcpy-enhanced (scrcpy-server 3.3.4) on host `:6083` (profile `phone`; Android 16 OK) |
 | `Dockerfile.gateway` + `gateway/` | **Gateway** — lease/park/release, proxy, Bearer auth, OpenAPI `:9000` |
-| `docker-compose.yml` | `gateway` + `worker-1` + `worker-2`; optional `phone-1` + `scrcpy-web` via profile `phone` |
+| `gateway/providers/` | **Cloud phone providers** — `CloudPhoneProvider` registry; `phone-harness` first impl |
+| `docker-compose.yml` | `gateway` + `worker-1` + `worker-2`; optional `phone` / `phone-cloud` profiles |
 | `schemas/` + `BINDING.md` | OpenAI / Anthropic-shaped tool maps for any agent host |
 | `profile/` + `scripts/` | Firefox profile / launch helpers |
 
@@ -44,9 +45,24 @@ curl -s -H "Authorization: Bearer $COMPUTER_API_TOKEN" \
 # Open lease vnc_url (…/watch.html) — live stream; intervene via gateway action / physical device
 ```
 
+Desktop + **cloud** phone (Phone Harness; no glass / no scrcpy):
+
+```bash
+# .env: WORKER_INVENTORY_FILE=./gateway/workers.with-phone-cloud.json
+#       COMPOSE_PROFILES=phone-cloud   # or phone,phone-cloud with physical too
+#       PHONE_HARNESS_API_KEY=pck_…
+docker compose up --build -d
+curl -s -H "Authorization: Bearer $COMPUTER_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"phone"}' http://localhost:9000/v1/sessions
+# Prefer leasing until seat phone-cloud1 is claimed (or free physical first).
+# Open lease vnc_url — vendor watch_url (view-only). Recycle to stop billing.
+```
+
 - Gateway: `http://localhost:9000` (`/docs`, `/openapi.json`)
 - noVNC: `http://localhost:6081/vnc.html?…` and `:6082` (lease `vnc_url` includes `autoconnect=1&resize=scale`)
-- Phone HITL: Compose `scrcpy-web` on `:6083` (`/watch.html?udid=` from bind/lease; `/` is the device picker)
+- Phone HITL (physical): Compose `scrcpy-web` on `:6083` (`/watch.html?udid=` from bind/lease; `/` is the device picker)
+- Phone HITL (cloud): lease `vnc_url` is the provider `watch_url` (not scrcpy)
 
 ## Agent-facing API (gateway)
 
@@ -65,17 +81,29 @@ Base: `/v1` · Auth: `Authorization: Bearer $COMPUTER_API_TOKEN` (optional if to
 | `GET` | `/v1/seats` | Per-worker inventory (`kind` + `free`/`leased`/`parked` + `session_id`/`vnc_url`/`job_id`) |
 | `GET` | `/v1/seats/{id}/devices` | Phone: adb devices visible to the seat |
 | `GET` | `/v1/seats/{id}/device` | Phone: current bind + selected device |
-| `POST` | `/v1/seats/{id}/bind` | Phone: runtime bind (`serial` and/or wireless `connect`) — refused while leased |
-| `POST` | `/v1/seats/{id}/unbind` | Phone: clear runtime bind (back to `ADB_SERIAL` env) |
+| `POST` | `/v1/seats/{id}/bind` | Phone (physical): runtime bind (`serial` / `connect` / optional `unlock`) — refused while leased or on cloud seats |
+| `POST` | `/v1/seats/{id}/unbind` | Phone (physical): clear runtime bind — refused on cloud seats |
 | `GET` | `/health` · `/ready` | Ops aggregates |
 
 Worker (internal): `GET /health`, `GET /screenshot`, `POST /action`, `POST /session/reset`.
 
-Phone worker env: `ADB_SERIAL` (required if multiple devices), `ADB_CONNECT` (optional `host:port`), `RESET_FORCE_STOP_PACKAGES` / `RECYCLE_CLEAR_PACKAGES` (comma package lists). Soft park → force-stop; recycle / idle wipe → `pm clear`.
+Phone worker env: `ADB_SERIAL` (required if multiple devices), `ADB_CONNECT` (optional `host:port`), `ALLOW_EMPTY_DEVICE` (cloud worker: healthy before bind), `RESET_FORCE_STOP_PACKAGES` / `RECYCLE_CLEAR_PACKAGES` (comma package lists). Soft park → force-stop; recycle / idle wipe → `pm clear`.
 
 Compose `phone-1` + `scrcpy-web` share the bridge network and host `~/.android`. **First-time Allow:** on the phone, enable Wireless debugging (or USB), then from the Compose host run `adb connect ip:5555` and tap **Allow** / **Authorize this computer** when prompted — the same `~/.android` keys are mounted into both containers. After that you can rebind without recreating services: `POST /v1/seats/{id}/bind` with `{"connect":"ip:5555"}` (or `{"serial":"…"}` for USB). Boot env `ADB_SERIAL`/`ADB_CONNECT` is the default bind; runtime bind updates Watch `vnc_url` with `?udid=`. Inventory `vnc_url` points at scrcpy-web (`http://localhost:6083/watch.html`). Watch is **read-only**; drive the device via gateway `POST …/action` or the physical phone.
 
-Pool states: **free** → **leased** → **parked** (idle TTL) → free after reset. Capacity is **fixed** (Compose workers), not on-demand.
+### Cloud phone seats (`CloudPhoneProvider`)
+
+Inventory seats may set `"provider": "phone-harness"` (kind still `phone`). On lease the gateway:
+
+1. Calls the registered provider (`gateway/providers/`) — provision until ADB-ready
+2. Binds `phone-cloud-1` with `connect` + vendor `unlock`
+3. Sets lease `vnc_url` to the provider **watch_url** (view-only HITL)
+
+Soft **park** keeps the cloud session (billing continues). **Recycle** / parked-idle free calls provider **teardown** (stops billing). Manual `/v1/seats/{id}/bind` is refused on cloud seats.
+
+Add another ADB+watch vendor later: new module under `gateway/providers/`, `register()`, add id to `KNOWN_CLOUD_PROVIDERS` in `gateway/inventory.py`, inventory `provider` string. Pool never imports vendor SDKs.
+
+Pool states: **free** → **leased** → **parked** (idle TTL) → free after reset. Capacity is **fixed** (Compose workers / inventory seats), not on-demand.
 
 ## Conventions
 
@@ -93,20 +121,25 @@ Pool states: **free** → **leased** → **parked** (idle TTL) → free after re
 | `GATEWAY_PUBLIC_BASE` | Origin baked into `api_base` (e.g. `http://desk.hsv` on ThinkPad) |
 | `WORKER_INVENTORY_PATH` | Path to JSON array of seats (`url`, `vnc_url`, `kind`, optional `id`) |
 | `WORKER_INVENTORY_FILE` | Host path Compose mounts to that file (default `./gateway/workers.json`) |
-| `COMPOSE_PROFILES` | Set `phone` to start `phone-1` + `scrcpy-web` (use with `workers.with-phone.json`) |
+| `COMPOSE_PROFILES` | `phone` → `phone-1` + `scrcpy-web`; `phone-cloud` → `phone-cloud-1` (comma-combine both) |
 | `ADB_SERIAL` / `ADB_CONNECT` | Default phone + scrcpy-web bind at boot (host must see the device; Allow once) |
 | `SCRCPY_ADB_API_URL` | Gateway → scrcpy-web internal bind API (default `http://scrcpy-web:8001`) |
 | `PHONE_HITL_URL` | Optional override mirrored into phone-1 health detail (default `http://localhost:6083/watch.html`) |
+| `PHONE_HARNESS_API_KEY` | Bearer for Phone Harness (`pck_…`); required to lease cloud seats |
+| `PHONE_HARNESS_API_BASE` | Default `https://api.phone-harness.com` |
+| `PHONE_HARNESS_TIMEOUT_SEC` | Cloud session lifetime floor (default max(SESSION+PARKED, 900)) |
+| `PHONE_HARNESS_PROFILE_ID` | Optional persistent harness profile |
 | `REQUIRE_WORKER_INVENTORY` | Compose/`Dockerfile.gateway` set to `1` — refuse legacy URL lists |
 | `SESSION_TTL_SEC` / `PARKED_TTL_SEC` | Lease and parked idle TTLs |
 
 **Per-environment inventory:** do not reuse one `vnc_url` across hosts. Point `.env` at the right file:
 
 - Local desktop-only: `WORKER_INVENTORY_FILE=./gateway/workers.json`
-- Local + phone: `workers.with-phone.json` + `COMPOSE_PROFILES=phone`
+- Local + physical phone: `workers.with-phone.json` + `COMPOSE_PROFILES=phone`
+- Local + cloud (and optional physical): `workers.with-phone-cloud.json` + `COMPOSE_PROFILES=phone-cloud` (add `phone` if both)
 - ThinkPad/Caddy: copy `gateway/workers.hsv.example.json` → e.g. `gateway/workers.hsv.json`, edit hostnames (includes optional `phone1`)
 
-On boot the gateway **logs each seat** (`id`, `kind`, `url`, `vnc_url`) and **exits** if the mount is missing/invalid (Docker empty-dir footgun). Confirm with `GET /v1/seats` after up.
+On boot the gateway **logs each seat** (`id`, `kind`, `provider`, `url`, `vnc_url`) and **exits** if the mount is missing/invalid (Docker empty-dir footgun) or an inventory `provider` is unregistered. Confirm with `GET /v1/seats` after up.
 
 Legacy (only if `WORKER_INVENTORY_PATH` is unset and `REQUIRE_WORKER_INVENTORY` is off): `WORKER_URLS` + `WORKER_VNC_URLS` → all `desktop`.
 
@@ -151,21 +184,22 @@ Agents can curl this gateway today. When Relay grows phone seats, keep inference
 |---------------|--------------------------|
 | `@relay/engines-computer` | Pass `kind: "phone"` on `POST /v1/sessions`. Forward phone action bodies (`swipe`, `long_press`, `launch`, `key` with `back`/`home`/`recents`, optional `ref`). Prefer `GET …/observe` when the loop is vision+tree; fall back to screenshot pixels for custom views (Reels, etc.). |
 | `@relay/browse-policy` (or phone system prompt) | Phone priors: swipe-heavy navigation, avoid desktop chords (`ctrl+l`), use `launch`/`uri` to open apps, `home`/`back` for system chrome. HITL **Watch** via lease `vnc_url` (scrcpy-web / `cu-phone.hsv`). |
-| Desk / Settings | Inventory already exposes `kind` on `/v1/seats`; show phone seats separately from desktop noVNC. Open `vnc_url` for read-only Watch. Use `GET …/seats/{id}/devices` + `POST …/bind` so users can attach their own phone (document the one-time Allow prompt). |
+| Desk / Settings | Inventory already exposes `kind` (+ `provider` for cloud) on `/v1/seats`; show phone seats separately from desktop noVNC. Open `vnc_url` for read-only Watch (scrcpy or harness watch_url). Physical: `GET …/devices` + `POST …/bind` (Allow once). Cloud: no manual bind. |
 | Desk take-over (intervene) | **relay-os Desk** — when `need_human`, drive via gateway `POST …/action` (same control plane as the agent), not by injecting clicks into scrcpy-web. Physical phone OK for local dogfood. |
 | ThinkPad Caddy / `cu-phone.hsv` | **Deploy + Desk docs** (`relay-os/apps/relay-desk/LAPTOP.md`) — live Caddyfile Host route → `127.0.0.1:6083`. This repo documents the snippet and ships `workers.hsv.example.json`; applying Caddy on the host is not a computer-with-agent code change. |
 | CommunityEngager | Stay **desktop evidence-only** unless an explicit phone transport is designed; do not silently lease `kind=phone` for Reddit. |
 
 Park/recycle semantics: phone park → soft force-stop (packages stay logged in); recycle → `pm clear` on configured packages — map Relay “job done” to recycle only when a clean app state is intended.
 
-Phone HITL Watch contract (this runtime): Compose `scrcpy-web` on `:6083` is **read-only**; inventory `vnc_url` is `http://localhost:6083/watch.html` or `https://cu-phone.hsv/watch.html`. See `.cursor/plans/phone_scrcpy_web_hitl.plan.md`.
+Phone HITL Watch contract (this runtime): Compose `scrcpy-web` on `:6083` is **read-only**; inventory `vnc_url` is `http://localhost:6083/watch.html` or `https://cu-phone.hsv/watch.html`. Cloud seats use the provider `watch_url` instead. See `.cursor/plans/phone_scrcpy_web_hitl.plan.md` and `.cursor/plans/phone_harness_cloud_*.plan.md` (or Cursor plan **Phone Harness cloud**).
 
 ## Out of scope (for now)
 
-- On-demand container/Pod per lease
+- On-demand container/Pod per lease (cloud concurrency = inventory seat count)
 - Gateway-hosted vision/LLM loops
 - Auto CAPTCHA solve
 - Reliable Cmd+V into noVNC canvas (use `type` action or noVNC clipboard UI)
+- Non-ADB cloud tooling inside `CloudPhoneProvider` (different worker/kind)
 
 ## Quick bind loop
 
