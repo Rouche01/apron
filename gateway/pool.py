@@ -422,10 +422,12 @@ class SessionPool:
         *,
         serial: str | None = None,
         connect: str | None = None,
+        unlock: str | None = None,
     ) -> tuple[int, dict[str, Any]]:
         """Bind a phone seat's worker (+ optional scrcpy-web) to a device.
 
         Refuses while the seat is leased (agent has exclusive claim).
+        Optional unlock is for cloud vendors (Phone Harness); omitted for physical.
         """
         with self._lock:
             self._park_expired_leases_locked(_utcnow())
@@ -447,6 +449,8 @@ class SessionPool:
             body["serial"] = serial
         if connect:
             body["connect"] = connect
+        if unlock:
+            body["unlock"] = unlock
 
         with httpx.Client(timeout=self._timeout) as client:
             try:
@@ -470,9 +474,11 @@ class SessionPool:
 
         scrcpy: dict[str, Any] | None = None
         if SCRCPY_ADB_API_URL and (serial or connect):
+            # Scrcpy adb-api: connect only (no unlock). Phone worker holds the unlock.
+            scrcpy_body = {k: v for k, v in body.items() if k != "unlock"}
             try:
                 with httpx.Client(timeout=self._timeout) as client:
-                    sr = client.post(f"{SCRCPY_ADB_API_URL}/device/bind", json=body)
+                    sr = client.post(f"{SCRCPY_ADB_API_URL}/device/bind", json=scrcpy_body)
                     try:
                         scrcpy = sr.json()
                     except Exception:

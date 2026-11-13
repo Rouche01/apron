@@ -47,7 +47,8 @@ class BindBody(BaseModel):
     """Bind this seat to a device visible to the worker's adb."""
 
     serial: str | None = None
-    connect: str | None = None  # optional wireless host:port (adb connect)
+    connect: str | None = None  # optional wireless / cloud host:port (adb connect)
+    unlock: str | None = None  # optional vendor unlock after connect (e.g. Phone Harness)
 
 
 @app.get("/devices")
@@ -83,40 +84,55 @@ def device_status():
 
 @app.post("/device/bind")
 def device_bind(body: BindBody):
-    """Runtime bind: optional adb connect, then select serial for all worker actions.
+    """Runtime bind: optional adb connect (+ unlock), then select serial for actions.
 
-    Human must Authorize / Allow wireless debugging on the phone once (host or
-    this container's adb keys via mounted ~/.android). After that, Desk can
-    rebind without recreating containers.
+    Physical: human Allow once (USB/wireless). Cloud providers (e.g. Phone Harness)
+    pass unlock after connect — no host RSA prompt.
     """
     serial = (body.serial or "").strip() or None
     connect = (body.connect or "").strip() or None
+    unlock = (body.unlock or "").strip() or None
     if not serial and not connect:
         raise HTTPException(status_code=400, detail="serial and/or connect required")
 
     connect_out = None
+    unlock_out = None
     try:
         if connect:
             connect_out = adbutil.adb_connect(connect)
             if not serial:
-                # Common wireless form: serial == connect target (ip:5555).
+                # Common wireless / cloud form: serial == connect target (host:port).
                 serial = connect
         bound = adbutil.set_bound_serial(serial)
+        if unlock:
+            if not bound:
+                raise adbutil.AdbError("unlock requires a bound serial")
+            unlock_out = adbutil.adb_unlock(bound, unlock)
         selected = adbutil.selected_device()
     except adbutil.AdbError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
 
     ready = bool(selected and selected.get("state") == "device")
+    hint = None
+    if not ready:
+        hint = (
+            "device not in 'device' state — authorize USB/wireless Allow on the phone, "
+            "or retry unlock for cloud ADB"
+        )
+    elif unlock and unlock_out and "unlocked" not in unlock_out.lower():
+        # Connected but unlock output unexpected — still report result.
+        hint = f"unlock returned: {unlock_out}"
+
     return {
         "ok": ready,
         "bound_serial": bound,
         "connect": connect,
         "connect_result": connect_out,
+        "unlock": bool(unlock),
+        "unlock_result": unlock_out,
         "selected": selected,
         "devices": adbutil.devices(),
-        "hint": None
-        if ready
-        else "device not in 'device' state — authorize USB/wireless Allow on the phone, then retry",
+        "hint": hint,
     }
 
 

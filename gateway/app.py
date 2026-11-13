@@ -211,7 +211,11 @@ class SeatBindBody(BaseModel):
     )
     connect: str | None = Field(
         default=None,
-        description="Optional wireless host:port — runs adb connect, then binds",
+        description="Optional wireless/cloud host:port — runs adb connect, then binds",
+    )
+    unlock: str | None = Field(
+        default=None,
+        description="Optional vendor unlock after connect (e.g. Phone Harness shell unlock code)",
     )
 
 
@@ -281,6 +285,7 @@ def seat_bind(seat_id: str, body: SeatBindBody, _: AuthDep):
         seat_id,
         serial=(body.serial or "").strip() or None,
         connect=(body.connect or "").strip() or None,
+        unlock=(body.unlock or "").strip() or None,
     )
     if status >= 400:
         raise HTTPException(status_code=status, detail=data)

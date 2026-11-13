@@ -67,6 +67,41 @@ def adb_connect(hostport: str) -> str:
     return out or f"connected to {target}"
 
 
+def adb_unlock(serial: str, code: str) -> str:
+    """Vendor unlock after adb connect (e.g. Phone Harness: `adb shell unlock <code>`).
+
+    Physical USB/wireless devices leave unlock empty — this is a no-op path for them.
+    """
+    target = (serial or "").strip()
+    unlock = (code or "").strip()
+    if not target:
+        raise AdbError("unlock serial is empty")
+    if not unlock:
+        raise AdbError("unlock code is empty")
+    cmd = ["adb", "-s", target, "shell", "unlock", unlock]
+    try:
+        r = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            timeout=20,
+            text=True,
+        )
+    except FileNotFoundError as e:
+        raise AdbError("adb not found on PATH — install Android platform-tools") from e
+    except subprocess.TimeoutExpired as e:
+        raise AdbError(f"adb unlock timed out: {target}") from e
+    out = ((r.stdout or "") + (r.stderr or "")).strip()
+    # Harness prints "unlocked"; treat that as success even if rc odd.
+    if r.returncode != 0 and "unlocked" not in out.lower():
+        raise AdbError(
+            f"adb unlock failed: {out or r.returncode}",
+            stderr=out,
+            returncode=r.returncode,
+        )
+    return out or "unlocked"
+
+
 def adb_prefix() -> list[str]:
     cmd = ["adb"]
     serial = _serial()
