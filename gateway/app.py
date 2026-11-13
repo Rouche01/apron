@@ -15,8 +15,11 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
+import providers  # noqa: F401 — registers CloudPhoneProvider impls (phone-harness, …)
 from inventory import SeatKind, load_workers
 from pool import SessionPool
+from providers import registered_names
+from providers.base import CloudPhoneProviderError
 
 logger = logging.getLogger("computer.gateway")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -27,6 +30,13 @@ PUBLIC_BASE = os.environ.get("GATEWAY_PUBLIC_BASE", "http://localhost:9000").rst
 API_TOKEN = os.environ.get("COMPUTER_API_TOKEN", "").strip()
 
 _WORKERS = load_workers()
+_registered = registered_names()
+for _w in _WORKERS:
+    if _w.provider and _w.provider not in _registered:
+        raise RuntimeError(
+            f"inventory seat {_w.id!r} provider={_w.provider!r} is not registered; "
+            f"known: {sorted(_registered) or '(none)'}"
+        )
 pool = SessionPool(
     _WORKERS,
     default_ttl_sec=DEFAULT_TTL,
@@ -60,9 +70,10 @@ async def lifespan(_app: FastAPI):
     )
     for w in _WORKERS:
         logger.info(
-            "seat id=%s kind=%s url=%s vnc_url=%s",
+            "seat id=%s kind=%s provider=%s url=%s vnc_url=%s",
             w.id,
             w.kind,
+            w.provider or "-",
             w.url,
             w.vnc_url,
         )
@@ -330,12 +341,23 @@ def create_session(
     """Lease a free worker of the requested kind, or reattach a parked seat when job_id matches."""
     job_id = body.job_id or x_job_id
     kind: SeatKind = body.kind
-    info = pool.lease(
-        agent_id=body.agent_id,
-        job_id=job_id,
-        ttl_sec=body.ttl_sec,
-        kind=kind,
-    )
+    try:
+        info = pool.lease(
+            agent_id=body.agent_id,
+            job_id=job_id,
+            ttl_sec=body.ttl_sec,
+            kind=kind,
+        )
+    except CloudPhoneProviderError as e:
+        detail: dict = {
+            "ok": False,
+            "error": str(e),
+            "kind": kind,
+            "code": e.code,
+        }
+        if e.retry_after_seconds is not None:
+            detail["retry_after_seconds"] = e.retry_after_seconds
+        raise HTTPException(status_code=503, detail=detail) from e
     if not info:
         raise HTTPException(
             status_code=503,

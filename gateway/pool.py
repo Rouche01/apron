@@ -8,6 +8,7 @@ Worker states:
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import uuid
@@ -19,6 +20,10 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 import httpx
 
 from inventory import SeatKind, WorkerSpec
+from providers import get as get_cloud_provider
+from providers.base import CloudPhoneProviderError, CloudSession
+
+logger = logging.getLogger("computer.gateway.pool")
 
 SlotState = Literal["free", "leased", "parked"]
 
@@ -67,6 +72,10 @@ class WorkerSlot:
     parked_at: datetime | None = None  # parked idle clock
     bound_serial: str | None = None  # phone runtime bind (Watch udid)
     inventory_vnc_url: str = ""  # original inventory vnc_url (before udid rewrite)
+    provider: str | None = None  # inventory cloud provider id (e.g. phone-harness)
+    provider_session_id: str | None = None  # live cloud session
+    cloud_watch_url: str | None = None
+    cloud_unlock: str | None = None
 
 
 @dataclass
@@ -112,6 +121,7 @@ class SessionPool:
                         inventory_vnc_url=w.vnc_url,
                         kind=w.kind,
                         seat_id=w.id or f"desk{i + 1}",
+                        provider=w.provider,
                     )
                 )
             else:
@@ -135,8 +145,11 @@ class SessionPool:
         return self._parked_ttl
 
     def effective_vnc(self, slot: WorkerSlot) -> str:
+        # Cloud HITL: vendor watch_url (not scrcpy / udid).
+        if slot.cloud_watch_url:
+            return slot.cloud_watch_url
         base = slot.inventory_vnc_url or slot.vnc_url
-        if slot.kind == "phone" and slot.bound_serial:
+        if slot.kind == "phone" and slot.bound_serial and not slot.provider:
             return vnc_url_with_udid(base, slot.bound_serial)
         return slot.vnc_url
 
@@ -164,6 +177,14 @@ class SessionPool:
             self._park_expired_leases_locked(_utcnow())
             return sum(1 for s in self._slots if s.state == "free" and s.kind == kind)
 
+    def _cloud_teardown_payload_locked(self, slot: WorkerSlot) -> dict[str, str] | None:
+        if slot.provider and slot.provider_session_id:
+            return {
+                "provider": slot.provider,
+                "session_id": slot.provider_session_id,
+            }
+        return None
+
     def _clear_to_free_locked(self, slot: WorkerSlot) -> None:
         slot.state = "free"
         slot.session_id = None
@@ -171,12 +192,19 @@ class SessionPool:
         slot.job_id = None
         slot.expires_at = None
         slot.parked_at = None
+        # Drop live cloud session fields; inventory provider name stays.
+        slot.provider_session_id = None
+        slot.cloud_watch_url = None
+        slot.cloud_unlock = None
+        if slot.provider:
+            slot.bound_serial = None
+            slot.vnc_url = slot.inventory_vnc_url
 
     def _park_locked(self, slot: WorkerSlot, now: datetime) -> None:
         slot.state = "parked"
         slot.expires_at = None
         slot.parked_at = now
-        # session_id / agent_id / job_id retained for reattach
+        # session_id / agent_id / job_id / cloud session retained for reattach
 
     def _park_expired_leases_locked(self, now: datetime) -> None:
         for slot in self._slots:
@@ -187,24 +215,48 @@ class SessionPool:
             ):
                 self._park_locked(slot, now)
 
-    def _sweep_parked_idle_locked(self, now: datetime) -> list[str]:
-        """Free parked slots past idle TTL; return worker URLs that need Firefox reset."""
+    def _sweep_parked_idle_locked(
+        self, now: datetime
+    ) -> tuple[list[str], list[dict[str, str]]]:
+        """Free parked slots past idle TTL; return reset URLs + cloud teardowns."""
         urls: list[str] = []
+        teardowns: list[dict[str, str]] = []
         for slot in self._slots:
             if slot.state != "parked" or slot.parked_at is None:
                 continue
             age = (now - slot.parked_at).total_seconds()
             if age >= self._parked_ttl:
                 urls.append(slot.base_url)
+                td = self._cloud_teardown_payload_locked(slot)
+                if td:
+                    teardowns.append(td)
                 self._clear_to_free_locked(slot)
-        return urls
+        return urls, teardowns
+
+    def _teardown_cloud(self, payload: dict[str, str]) -> None:
+        provider_name = payload.get("provider") or ""
+        session_id = payload.get("session_id") or ""
+        if not provider_name or not session_id:
+            return
+        try:
+            get_cloud_provider(provider_name).teardown(session_id)
+        except Exception as e:
+            logger.warning(
+                "cloud teardown failed provider=%s session=%s: %s",
+                provider_name,
+                session_id,
+                e,
+            )
 
     def sweep_expired(self) -> list[str]:
         """Park lease-TTL expiry; free parked-idle slots and return URLs to reset."""
         with self._lock:
             now = _utcnow()
             self._park_expired_leases_locked(now)
-            return self._sweep_parked_idle_locked(now)
+            urls, teardowns = self._sweep_parked_idle_locked(now)
+        for td in teardowns:
+            self._teardown_cloud(td)
+        return urls
 
     def free_count(self) -> int:
         with self._lock:
@@ -242,8 +294,130 @@ class SessionPool:
                 }
                 if slot.kind == "phone":
                     seat["bound_serial"] = slot.bound_serial
+                    if slot.provider:
+                        seat["provider"] = slot.provider
+                        seat["provider_session_id"] = slot.provider_session_id
                 seats.append(seat)
             return seats
+
+    def _cloud_provision_timeout(self, lease_ttl_sec: int) -> int:
+        return max(int(lease_ttl_sec) + self._parked_ttl, 900)
+
+    def _worker_device_bind(
+        self,
+        worker_url: str,
+        *,
+        connect: str,
+        unlock: str | None,
+    ) -> tuple[int, Any]:
+        body: dict[str, Any] = {"connect": connect, "serial": connect}
+        if unlock:
+            body["unlock"] = unlock
+        with httpx.Client(timeout=max(self._timeout, 60.0)) as client:
+            r = client.post(f"{worker_url}/device/bind", json=body)
+            try:
+                data = r.json()
+            except Exception:
+                data = {"detail": r.text}
+            return r.status_code, data
+
+    def _apply_cloud_session_locked(self, slot: WorkerSlot, session: CloudSession) -> None:
+        slot.provider_session_id = session.provider_session_id
+        slot.cloud_watch_url = session.watch_url
+        slot.cloud_unlock = session.unlock
+        slot.bound_serial = session.adb_connect
+        slot.vnc_url = session.watch_url
+
+    def _provision_and_bind_cloud(self, seat_id: str, *, lease_ttl_sec: int) -> None:
+        """Provision via CloudPhoneProvider and bind the phone worker (outside lock)."""
+        with self._lock:
+            slot = self._find_seat_locked(seat_id)
+            if not slot or not slot.provider:
+                raise CloudPhoneProviderError(
+                    f"seat {seat_id} is not a cloud phone seat",
+                    code="not_cloud_seat",
+                )
+            provider_name = slot.provider
+            worker_url = slot.base_url
+
+        provider = get_cloud_provider(provider_name)
+        session = provider.provision(
+            timeout_sec=self._cloud_provision_timeout(lease_ttl_sec)
+        )
+        status, data = self._worker_device_bind(
+            worker_url,
+            connect=session.adb_connect,
+            unlock=session.unlock,
+        )
+        ok = status < 400 and isinstance(data, dict) and bool(data.get("ok", True))
+        if not ok:
+            try:
+                provider.teardown(session.provider_session_id)
+            except Exception as e:
+                logger.warning(
+                    "teardown after bind failure session=%s: %s",
+                    session.provider_session_id,
+                    e,
+                )
+            raise CloudPhoneProviderError(
+                f"phone worker bind failed after provision: {data}",
+                code="worker_bind_failed",
+            )
+
+        with self._lock:
+            slot = self._find_seat_locked(seat_id)
+            if not slot or slot.state != "leased":
+                try:
+                    provider.teardown(session.provider_session_id)
+                except Exception:
+                    pass
+                raise CloudPhoneProviderError(
+                    f"seat {seat_id} lost lease during cloud provision",
+                    code="lease_lost",
+                )
+            self._apply_cloud_session_locked(slot, session)
+
+    def _reconnect_cloud_adb(self, seat_id: str) -> None:
+        """Re-adb connect (+ unlock) for an existing cloud session (park → acquire)."""
+        with self._lock:
+            slot = self._find_seat_locked(seat_id)
+            if not slot or not slot.provider or not slot.provider_session_id:
+                return
+            if not slot.bound_serial:
+                return
+            provider_name = slot.provider
+            worker_url = slot.base_url
+            connect = slot.bound_serial
+            unlock = slot.cloud_unlock
+            watch = slot.cloud_watch_url
+            sid = slot.provider_session_id
+
+        session = CloudSession(
+            provider_session_id=sid,
+            adb_host=connect.rsplit(":", 1)[0] if ":" in connect else connect,
+            adb_port=int(connect.rsplit(":", 1)[1]) if ":" in connect else 5555,
+            unlock=unlock,
+            watch_url=watch or "",
+        )
+        hint = get_cloud_provider(provider_name).reconnect_hint(session)
+        status, data = self._worker_device_bind(
+            worker_url,
+            connect=hint.adb_connect,
+            unlock=hint.unlock,
+        )
+        if status >= 400 or (isinstance(data, dict) and data.get("ok") is False):
+            logger.warning(
+                "cloud ADB reconnect failed seat=%s: %s %s",
+                seat_id,
+                status,
+                data,
+            )
+
+    def _abort_claimed_lease(self, seat_id: str) -> None:
+        with self._lock:
+            slot = self._find_seat_locked(seat_id)
+            if slot and slot.state == "leased" and not slot.provider_session_id:
+                self._clear_to_free_locked(slot)
 
     def lease(
         self,
@@ -253,9 +427,17 @@ class SessionPool:
         ttl_sec: int | None = None,
         kind: SeatKind = "desktop",
     ) -> LeaseInfo | None:
-        """Reattach a parked seat for job_id if present; else claim a free worker of kind."""
+        """Reattach a parked seat for job_id if present; else claim a free worker of kind.
+
+        Cloud seats: provision + worker bind after claim. Raises CloudPhoneProviderError
+        on provider/bind failure (seat returned to free).
+        """
         ttl = _clamp_ttl(ttl_sec if ttl_sec is not None else self._default_ttl)
         now = _utcnow()
+        cloud_reattach_seat: str | None = None
+        cloud_provision_seat: str | None = None
+        info: LeaseInfo | None = None
+
         with self._lock:
             self._park_expired_leases_locked(now)
 
@@ -270,20 +452,51 @@ class SessionPool:
                         slot.parked_at = None
                         slot.agent_id = agent_id if agent_id is not None else slot.agent_id
                         slot.expires_at = now + timedelta(seconds=ttl)
-                        return self._lease_info(slot)
+                        info = self._lease_info(slot)
+                        if slot.provider:
+                            cloud_reattach_seat = slot.seat_id
+                        break
 
-            for slot in self._slots:
-                if slot.state != "free" or slot.kind != kind:
-                    continue
-                sid = str(uuid.uuid4())
-                slot.state = "leased"
-                slot.session_id = sid
-                slot.agent_id = agent_id
-                slot.job_id = job_id
-                slot.expires_at = now + timedelta(seconds=ttl)
-                slot.parked_at = None
+            if info is None:
+                for slot in self._slots:
+                    if slot.state != "free" or slot.kind != kind:
+                        continue
+                    sid = str(uuid.uuid4())
+                    slot.state = "leased"
+                    slot.session_id = sid
+                    slot.agent_id = agent_id
+                    slot.job_id = job_id
+                    slot.expires_at = now + timedelta(seconds=ttl)
+                    slot.parked_at = None
+                    info = self._lease_info(slot)
+                    if slot.provider:
+                        cloud_provision_seat = slot.seat_id
+                    break
+
+        if info is None:
+            return None
+
+        if cloud_reattach_seat:
+            self._reconnect_cloud_adb(cloud_reattach_seat)
+            with self._lock:
+                slot = self._find_seat_locked(cloud_reattach_seat)
+                if slot and slot.state == "leased":
+                    return self._lease_info(slot)
+            return info
+
+        if cloud_provision_seat:
+            try:
+                self._provision_and_bind_cloud(cloud_provision_seat, lease_ttl_sec=ttl)
+            except Exception:
+                self._abort_claimed_lease(cloud_provision_seat)
+                raise
+            with self._lock:
+                slot = self._find_seat_locked(cloud_provision_seat)
+                if not slot or slot.state != "leased":
+                    return None
                 return self._lease_info(slot)
-        return None
+
+        return info
 
     def acquire(
         self,
@@ -295,6 +508,7 @@ class SessionPool:
         """Parked → leased for the same session_id."""
         ttl = _clamp_ttl(ttl_sec if ttl_sec is not None else self._default_ttl)
         now = _utcnow()
+        cloud_seat: str | None = None
         with self._lock:
             self._park_expired_leases_locked(now)
             slot = self._find_locked(session_id)
@@ -309,7 +523,17 @@ class SessionPool:
             if agent_id is not None:
                 slot.agent_id = agent_id
             slot.expires_at = now + timedelta(seconds=ttl)
-            return AcquireResult(info=self._lease_info(slot))
+            if slot.provider:
+                cloud_seat = slot.seat_id
+            info = self._lease_info(slot)
+
+        if cloud_seat:
+            self._reconnect_cloud_adb(cloud_seat)
+            with self._lock:
+                slot = self._find_locked(session_id)
+                if slot and slot.state == "leased":
+                    return AcquireResult(info=self._lease_info(slot))
+        return AcquireResult(info=info)
 
     def heartbeat(self, session_id: str, ttl_sec: int | None = None) -> LeaseInfo | None:
         ttl = _clamp_ttl(ttl_sec if ttl_sec is not None else self._default_ttl)
@@ -323,7 +547,7 @@ class SessionPool:
             return self._lease_info(slot)
 
     def release(self, session_id: str) -> LeaseInfo | None:
-        """Soft release: leased → parked. Does not reset Firefox."""
+        """Soft release: leased → parked. Keeps cloud provider session (billing continues)."""
         now = _utcnow()
         with self._lock:
             self._park_expired_leases_locked(now)
@@ -344,15 +568,19 @@ class SessionPool:
             )
 
     def recycle(self, session_id: str) -> str | None:
-        """leased|parked → free; return worker base_url that should be reset."""
+        """leased|parked → free; teardown cloud session; return worker URL to reset."""
+        teardown: dict[str, str] | None = None
         with self._lock:
             self._park_expired_leases_locked(_utcnow())
             slot = self._find_locked(session_id)
             if not slot or slot.state == "free":
                 return None
             url = slot.base_url
+            teardown = self._cloud_teardown_payload_locked(slot)
             self._clear_to_free_locked(slot)
-            return url
+        if teardown:
+            self._teardown_cloud(teardown)
+        return url
 
     def worker_for(self, session_id: str) -> WorkerSlot | None:
         """Return the slot only while exclusively leased (observe/act)."""
@@ -436,6 +664,15 @@ class SessionPool:
                 return 404, {"ok": False, "detail": "seat not found"}
             if slot.kind != "phone":
                 return 400, {"ok": False, "detail": "only phone seats support device bind"}
+            if slot.provider:
+                return 400, {
+                    "ok": False,
+                    "detail": (
+                        "cloud seats are bound by the provider on lease — "
+                        f"manual bind refused (provider={slot.provider})"
+                    ),
+                    "provider": slot.provider,
+                }
             if slot.state == "leased":
                 return 409, {
                     "ok": False,
@@ -517,6 +754,15 @@ class SessionPool:
                 return 404, {"ok": False, "detail": "seat not found"}
             if slot.kind != "phone":
                 return 400, {"ok": False, "detail": "only phone seats support device bind"}
+            if slot.provider:
+                return 400, {
+                    "ok": False,
+                    "detail": (
+                        "cloud seats are unbound by recycle/teardown — "
+                        f"manual unbind refused (provider={slot.provider})"
+                    ),
+                    "provider": slot.provider,
+                }
             if slot.state == "leased":
                 return 409, {
                     "ok": False,
