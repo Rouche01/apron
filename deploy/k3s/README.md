@@ -27,24 +27,36 @@ sudo k3s ctr images import /tmp/worker.tar
 ```bash
 SEAT_BURST_BACKEND=k3s
 DESKTOP_BURST_MAX=2          # 0 = never spawn
+PHONE_BURST_MAX=1            # 0 = never spawn phone workers
+PHONE_BURST_PROVIDER=phone-harness
 KUBECONFIG=/path/to/k3s.yaml
 SEAT_BURST_NAMESPACE=computer-burst
 SEAT_BURST_DESKTOP_IMAGE=computer-with-agent-worker:local
-GATEWAY_BURST_VNC_BASE=http://localhost:30080   # public HITL origin you route to Pods
+SEAT_BURST_PHONE_IMAGE=computer-with-agent-phone:local
+GATEWAY_BURST_VNC_BASE=http://localhost:30080   # public HITL origin you route to desktop Pods
 ```
 
-Pool wiring is live: reserved seats are claimed first; when full and `DESKTOP_BURST_MAX > 0` with `SEAT_BURST_BACKEND=k3s`, the gateway spawns a Job and registers an ephemeral seat. Recycle / parked-idle destroys the Job.
+Pool wiring is live: reserved seats are claimed first; when full and `*_BURST_MAX > 0` with `SEAT_BURST_BACKEND=k3s`, the gateway spawns a Job and registers an ephemeral seat. Recycle / parked-idle destroys the Job (and tears down cloud provider sessions for phone).
 
-## HITL (noVNC)
+Import phone image for phone burst:
 
-Each Job gets a Service (`control:8000`, `novnc:6080`). Expose Watch via:
+```bash
+docker save computer-with-agent-phone:local -o /tmp/phone.tar
+sudo k3s ctr images import /tmp/phone.tar
+```
+
+## HITL (noVNC) — desktop burst
+
+Each desktop Job gets a Service (`control:8000`, `novnc:6080`). Expose Watch via:
 
 - **NodePort / Ingress / Caddy** on the host → `GATEWAY_BURST_VNC_BASE`, or
 - Port-forward for debug: `kubectl -n computer-burst port-forward svc/<job> 6080:6080`
 
 ## Phone burst
 
-Not in phase 1 templates. Later: phone Job image + `CloudPhoneProvider.provision` after Pod ready.
+`phone-burst-job.yaml.template` runs the phone worker (`ALLOW_EMPTY_DEVICE=1`, control `:8000`). After Pod ready the pool sets `provider=PHONE_BURST_PROVIDER` and runs `CloudPhoneProvider.provision` + ADB bind. Lease `vnc_url` is the vendor **watch_url** (not scrcpy). Recycle → provider teardown + Job delete.
+
+See [`.cursor/plans/phone_seat_flows_8a1a7577.plan.md`](../../.cursor/plans/phone_seat_flows_8a1a7577.plan.md).
 
 ## Why not Nomad
 

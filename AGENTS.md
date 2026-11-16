@@ -135,6 +135,8 @@ Pool states: **free** → **leased** → **parked** (idle TTL) → free after re
 | `SESSION_TTL_SEC` / `PARKED_TTL_SEC` | Lease and parked idle TTLs |
 | `SEAT_BURST_BACKEND` | `disabled` (default) or `k3s` — on-demand worker factory |
 | `DESKTOP_BURST_MAX` / `PHONE_BURST_MAX` | Max ephemeral seats beyond reserved (default `0`) |
+| `PHONE_BURST_PROVIDER` | Cloud provider id for phone burst seats (default `phone-harness`) |
+| `SEAT_BURST_PHONE_IMAGE` | k3s phone worker image (default `computer-with-agent-phone:local`) |
 | `KUBECONFIG` | kubeconfig for k3s burst (when backend is `k3s`) |
 
 **Per-environment inventory:** do not reuse one `vnc_url` across hosts. Point `.env` at the right file:

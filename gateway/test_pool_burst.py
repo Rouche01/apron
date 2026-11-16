@@ -131,3 +131,89 @@ def test_spawn_failure_propagates():
     except WorkerFactoryError as e:
         assert e.code == "spawn_failed"
     assert pool.burst_count_for("desktop") == 0
+
+
+def _phone_pool(*, burst_max: int = 1, factory=None) -> SessionPool:
+    workers = [
+        WorkerSpec(
+            id="phone-cloud1",
+            url="http://phone-cloud-1:8003",
+            vnc_url="https://placeholder.invalid/watch",
+            kind="phone",
+            provider="phone-harness",
+        ),
+    ]
+    pool = SessionPool(
+        workers,
+        worker_factory=factory or FakeWorkerFactory(),
+        desktop_burst_max=0,
+        phone_burst_max=burst_max,
+    )
+
+    def _fake_provision(seat_id: str, *, lease_ttl_sec: int) -> None:
+        with pool._lock:
+            slot = pool._find_seat_locked(seat_id)
+            assert slot is not None
+            assert slot.provider == "phone-harness"
+            slot.provider_session_id = f"sess-{seat_id}"
+            slot.cloud_watch_url = f"https://watch.example/{seat_id}"
+            slot.vnc_url = slot.cloud_watch_url
+            slot.bound_serial = "10.0.0.1:5555"
+
+    pool._provision_and_bind_cloud = _fake_provision  # type: ignore[method-assign]
+    pool._teardown_cloud = lambda payload: None  # type: ignore[method-assign]
+    return pool
+
+
+def test_phone_prefers_reserved_cloud_before_burst():
+    factory = FakeWorkerFactory()
+    pool = _phone_pool(burst_max=2, factory=factory)
+    info = pool.lease(kind="phone")
+    assert info is not None
+    assert info.seat_id == "phone-cloud1"
+    assert factory.spawned == []
+
+
+def test_phone_burst_when_reserved_cloud_full():
+    factory = FakeWorkerFactory()
+    pool = _phone_pool(burst_max=1, factory=factory)
+    pool.lease(kind="phone")
+    second = pool.lease(kind="phone", agent_id="overflow")
+    assert second is not None
+    assert second.seat_id.startswith("phone-burst-")
+    assert second.vnc_url.startswith("https://watch.example/")
+    assert len(factory.spawned) == 1
+    seats = {s["id"]: s for s in pool.list_seats()}
+    assert seats[second.seat_id]["ephemeral"] is True
+    assert seats[second.seat_id]["provider"] == "phone-harness"
+
+
+def test_phone_burst_recycle_destroys_pod():
+    factory = FakeWorkerFactory()
+    pool = _phone_pool(burst_max=1, factory=factory)
+    pool.lease(kind="phone")
+    second = pool.lease(kind="phone")
+    assert second is not None
+    pool.recycle(second.session_id)
+    assert factory.destroyed == [f"job-{second.seat_id}"]
+    assert second.seat_id not in {s["id"] for s in pool.list_seats()}
+
+
+def test_phone_burst_provision_failure_destroys_ephemeral():
+    from providers.base import CloudPhoneProviderError
+
+    factory = FakeWorkerFactory()
+    pool = _phone_pool(burst_max=1, factory=factory)
+    assert pool.lease(kind="phone") is not None  # reserved cloud OK
+
+    def _fail_provision(seat_id: str, *, lease_ttl_sec: int) -> None:
+        raise CloudPhoneProviderError("no quota", code="quota")
+
+    pool._provision_and_bind_cloud = _fail_provision  # type: ignore[method-assign]
+    try:
+        pool.lease(kind="phone")
+        raise AssertionError("expected CloudPhoneProviderError")
+    except CloudPhoneProviderError as e:
+        assert e.code == "quota"
+    assert factory.destroyed == [f"job-{factory.spawned[0]}"]
+    assert pool.burst_count_for("phone") == 0

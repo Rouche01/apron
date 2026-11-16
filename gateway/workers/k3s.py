@@ -36,6 +36,7 @@ class K3sWorkerFactory:
         manifest_dir: str | None = None,
         vnc_base: str | None = None,
         image_desktop: str | None = None,
+        image_phone: str | None = None,
         kubectl: str | None = None,
         ready_timeout_sec: float = 180.0,
     ) -> None:
@@ -66,6 +67,13 @@ class K3sWorkerFactory:
                 "computer-with-agent-worker:local",
             )
         )
+        self._image_phone = (
+            image_phone
+            or os.environ.get(
+                "SEAT_BURST_PHONE_IMAGE",
+                "computer-with-agent-phone:local",
+            )
+        )
         self._kubectl = kubectl or os.environ.get("KUBECTL", "kubectl")
         self._ready_timeout = ready_timeout_sec
 
@@ -91,10 +99,18 @@ class K3sWorkerFactory:
         except subprocess.TimeoutExpired as e:
             raise WorkerFactoryError("kubectl timed out", code="kubectl_timeout") from e
 
+    def _sanitize_job_name(self, seat_id: str, *, kind: SeatKind) -> str:
+        prefix = "phone-burst" if kind == "phone" else "desk-burst"
+        job_name = seat_id.replace("_", "-").lower()
+        if not job_name.startswith(prefix):
+            job_name = f"{prefix}-{job_name}"
+        job_name = "".join(c if c.isalnum() or c == "-" else "-" for c in job_name)[:63]
+        return job_name
+
     def spawn(self, kind: SeatKind, *, seat_id: str) -> SpawnedWorker:
-        if kind != "desktop":
+        if kind not in ("desktop", "phone"):
             raise WorkerFactoryError(
-                f"k3s burst for kind={kind!r} not implemented yet (desktop first)",
+                f"k3s burst for kind={kind!r} not supported",
                 code="kind_unsupported",
             )
         if shutil.which(self._kubectl) is None and self._kubectl == "kubectl":
@@ -103,24 +119,25 @@ class K3sWorkerFactory:
                 code="kubectl_missing",
             )
 
-        template = self._manifest_dir / "desktop-burst-job.yaml.template"
+        if kind == "phone":
+            template = self._manifest_dir / "phone-burst-job.yaml.template"
+            image = self._image_phone
+        else:
+            template = self._manifest_dir / "desktop-burst-job.yaml.template"
+            image = self._image_desktop
+
         if not template.is_file():
             raise WorkerFactoryError(
                 f"missing manifest template: {template}",
                 code="manifest_missing",
             )
 
-        job_name = seat_id.replace("_", "-").lower()
-        if not job_name.startswith("desk-burst"):
-            job_name = f"desk-burst-{job_name}"
-        # k8s names: lowercase alnum and -
-        job_name = "".join(c if c.isalnum() or c == "-" else "-" for c in job_name)[:63]
-
+        job_name = self._sanitize_job_name(seat_id, kind=kind)
         raw = template.read_text(encoding="utf-8")
         rendered = (
             raw.replace("{{JOB_NAME}}", job_name)
             .replace("{{NAMESPACE}}", self._namespace)
-            .replace("{{IMAGE}}", self._image_desktop)
+            .replace("{{IMAGE}}", image)
             .replace("{{SEAT_ID}}", seat_id)
         )
 
@@ -146,7 +163,6 @@ class K3sWorkerFactory:
                 code="apply_failed",
             )
 
-        # Wait for job pod Ready
         deadline = time.monotonic() + self._ready_timeout
         while time.monotonic() < deadline:
             get = self._run(
@@ -178,24 +194,26 @@ class K3sWorkerFactory:
                 code="ready_timeout",
             )
 
-        # In-cluster DNS for Job pods is unstable; prefer Service created by template.
         control_url = f"http://{job_name}.{self._namespace}.svc.cluster.local:8000"
-        # HITL: NodePort service maps 6080 → node; GATEWAY_BURST_VNC_BASE should be
-        # the public origin (Caddy/Tailscale) that routes to this seat's noVNC.
-        vnc_url = (
-            f"{self._vnc_base}/vnc.html"
-            f"?autoconnect=1&resize=scale&path=&seat={seat_id}"
-        )
+        if kind == "phone":
+            # Replaced by CloudPhoneProvider watch_url after pool provision.
+            vnc_url = "https://placeholder.invalid/watch"
+        else:
+            vnc_url = (
+                f"{self._vnc_base}/vnc.html"
+                f"?autoconnect=1&resize=scale&path=&seat={seat_id}"
+            )
 
         logger.info(
-            "k3s spawned desktop seat=%s job=%s control=%s",
+            "k3s spawned %s seat=%s job=%s control=%s",
+            kind,
             seat_id,
             job_name,
             control_url,
         )
         return SpawnedWorker(
             seat_id=seat_id,
-            kind="desktop",
+            kind=kind,
             control_url=control_url,
             vnc_url=vnc_url,
             handle=job_name,
@@ -209,7 +227,6 @@ class K3sWorkerFactory:
             ["delete", "job", name, "-n", self._namespace, "--ignore-not-found=true"],
             check=False,
         )
-        # Also delete companion Service if present
         self._run(
             ["delete", "svc", name, "-n", self._namespace, "--ignore-not-found=true"],
             check=False,

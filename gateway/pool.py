@@ -505,10 +505,22 @@ class SessionPool:
             )
 
     def _abort_claimed_lease(self, seat_id: str) -> None:
+        """Undo a claimed lease after cloud provision / burst failure."""
+        destroy_handle: str | None = None
+        teardown: dict[str, str] | None = None
         with self._lock:
             slot = self._find_seat_locked(seat_id)
-            if slot and slot.state == "leased" and not slot.provider_session_id:
+            if not slot or slot.state != "leased":
+                return
+            teardown = self._cloud_teardown_payload_locked(slot)
+            if slot.ephemeral:
+                destroy_handle = slot.factory_handle
+                self._slots.remove(slot)
+            else:
                 self._clear_to_free_locked(slot)
+        if teardown:
+            self._teardown_cloud(teardown)
+        self._destroy_factory_handle(destroy_handle)
 
     def lease(
         self,
@@ -640,6 +652,12 @@ class SessionPool:
 
         return info
 
+    def _phone_burst_provider(self) -> str:
+        return (
+            os.environ.get("PHONE_BURST_PROVIDER", "phone-harness").strip()
+            or "phone-harness"
+        )
+
     def _lease_burst(
         self,
         *,
@@ -648,13 +666,18 @@ class SessionPool:
         job_id: str | None,
         ttl: int,
     ) -> LeaseInfo | None:
-        """Spawn an ephemeral seat when reserved inventory is exhausted."""
+        """Spawn an ephemeral seat when reserved inventory is exhausted.
+
+        Phone burst: spawn ADB worker Pod, then CloudPhoneProvider.provision + bind
+        (same as reserved cloud seats). Watch URL comes from the provider.
+        """
         max_n = self.burst_max_for(kind)
         if max_n <= 0:
             return None
 
         prefix = "phone-burst" if kind == "phone" else "desk-burst"
         seat_id = f"{prefix}-{uuid.uuid4().hex[:8]}"
+        phone_provider = self._phone_burst_provider() if kind == "phone" else None
 
         with self._lock:
             if self._burst_in_use_locked(kind) >= max_n:
@@ -689,16 +712,32 @@ class SessionPool:
                 expires_at=now + timedelta(seconds=ttl),
                 ephemeral=True,
                 factory_handle=spawned.handle,
+                provider=phone_provider,
             )
             self._slots.append(slot)
             logger.info(
-                "burst leased seat=%s kind=%s handle=%s factory=%s",
+                "burst leased seat=%s kind=%s handle=%s factory=%s provider=%s",
                 slot.seat_id,
                 slot.kind,
                 slot.factory_handle,
                 self._factory.name,
+                phone_provider or "-",
             )
-            return self._lease_info(slot)
+            info = self._lease_info(slot)
+
+        if phone_provider:
+            try:
+                self._provision_and_bind_cloud(seat_id, lease_ttl_sec=ttl)
+            except Exception:
+                self._abort_claimed_lease(seat_id)
+                raise
+            with self._lock:
+                slot = self._find_seat_locked(seat_id)
+                if not slot or slot.state != "leased":
+                    return None
+                return self._lease_info(slot)
+
+        return info
 
     def acquire(
         self,
