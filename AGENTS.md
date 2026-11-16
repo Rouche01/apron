@@ -103,7 +103,7 @@ Soft **park** keeps the cloud session (billing continues). **Recycle** / parked-
 
 Add another ADB+watch vendor later: new module under `gateway/providers/`, `register()`, add id to `KNOWN_CLOUD_PROVIDERS` in `gateway/inventory.py`, inventory `provider` string. Pool never imports vendor SDKs.
 
-Pool states: **free** → **leased** → **parked** (idle TTL) → free after reset. Capacity is **fixed** (Compose workers / inventory seats), not on-demand.
+Pool states: **free** → **leased** → **parked** (idle TTL) → free after reset. Capacity is **fixed** today (Compose workers / inventory seats). **Future:** reserved warm seats + optional on-demand **burst for both `desktop` and `phone`** (extra workers when reserved of that kind are busy; cloud phone also provisions harness) — see [`.cursor/plans/elastic_seats.plan.md`](.cursor/plans/elastic_seats.plan.md). Constraints: one desktop worker per seat; one ADB bind per phone worker (no multiplexing).
 
 ## Conventions
 
