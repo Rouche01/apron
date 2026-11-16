@@ -6,7 +6,7 @@ Default display (desktop): **1280×800**. Gateway: `http://localhost:9000` (Comp
 
 Seat **kind** (inventory JSON via `WORKER_INVENTORY_PATH`): `desktop` (default) or `phone`. Optional inventory `provider` (e.g. `phone-harness`) marks a cloud phone seat — same `kind: phone` lease for agents; gateway provisions ADB + `watch_url`. `POST /v1/sessions` body field `kind` selects the pool; omit it for desktop. Lease response includes `kind` and `seat_id`.
 
-**Phone selection:** `{"kind":"phone"}` claims **cloud** seats only (inventory `provider` set), then phone **lease-burst** if `PHONE_BURST_MAX>0`. Physical glass is opt-in: register/bind via ops, then pin with `"seat_id"`. `job_id` still reattaches a parked seat of either flavor. Exact pin errors: `404` / `400` / `409` (`seat_not_found` / `seat_kind_mismatch` / `seat_busy`). Full model: [`.cursor/plans/phone_seat_flows_8a1a7577.plan.md`](.cursor/plans/phone_seat_flows_8a1a7577.plan.md).
+**Phone selection:** `{"kind":"phone"}` claims **cloud** seats only (inventory `provider` set), then phone **lease-burst** if `PHONE_BURST_MAX>0`. Physical phones are opt-in: register/bind via ops, then pin with `"seat_id"`. `job_id` still reattaches a parked seat of either flavor. Exact pin errors: `404` / `400` / `409` (`seat_not_found` / `seat_kind_mismatch` / `seat_busy`). Full model: [`.cursor/plans/phone_seat_flows_8a1a7577.plan.md`](.cursor/plans/phone_seat_flows_8a1a7577.plan.md).
 
 **Register physical (ops):** `POST /v1/devices/register` with `{"connect":"ip:5555"}` (or `serial`) binds the first free unbound physical seat and returns `{seat_id, bound_serial, vnc_url}` for the agent pin. Optional `"seat_id"` rebinds that seat. If none are free and `PHONE_WARM_SPAWN_MAX>0` with `SEAT_BURST_BACKEND=k3s`, spawns a **warm reserved** phone worker (`warm_spawned`, survives recycle) then binds. Tear down with `POST /v1/devices/unregister` `{"seat_id":"phone-warm-…"}` (inventory seats: `/v1/seats/{id}/unbind` only).
 
@@ -221,7 +221,7 @@ REG=$(curl -s -H "$AUTH" -H 'Content-Type: application/json' \
 echo "$REG" | jq '{seat_id, bound_serial, vnc_url, warm_spawned}'
 SEAT=$(echo "$REG" | jq -r .seat_id)
 
-# Agent / pipeline: pin the prepared glass (cloud default will not pick it otherwise)
+# Agent / pipeline: pin the prepared physical phone (cloud default will not pick it otherwise)
 SESSION=$(curl -s -H "$AUTH" -H 'Content-Type: application/json' \
   -d "{\"kind\":\"phone\",\"seat_id\":\"$SEAT\",\"agent_id\":\"demo\",\"ttl_sec\":600}" \
   "$GW/v1/sessions")
@@ -229,7 +229,7 @@ SID=$(echo "$SESSION" | jq -r .session_id)
 # Watch: open .vnc_url (scrcpy-web /watch.html?udid=… on :6083) — read-only HITL
 echo "$SESSION" | jq '{session_id, kind, seat_id, vnc_url}'
 
-# Warm-spawned seats only — destroy worker when glass leaves the fleet:
+# Warm-spawned seats only — destroy worker when the physical phone leaves the fleet:
 # curl -s -H "$AUTH" -H 'Content-Type: application/json' \
 #   -d "{\"seat_id\":\"$SEAT\"}" "$GW/v1/devices/unregister"
 ```

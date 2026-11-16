@@ -47,7 +47,7 @@ curl -s -H "Authorization: Bearer $COMPUTER_API_TOKEN" \
 # Open lease vnc_url (…/watch.html) — live stream; intervene via gateway action / physical device
 ```
 
-Desktop + **cloud** phone (Phone Harness; no glass / no scrcpy):
+Desktop + **cloud** phone (Phone Harness; no physical phone / no scrcpy):
 
 ```bash
 # .env: WORKER_INVENTORY_FILE=./gateway/workers.with-phone-cloud.json
@@ -112,8 +112,8 @@ Pool states: **free** → **leased** → **parked** (idle TTL) → free after re
 Capacity:
 
 - **Reserved** Compose inventory (desktop + optional physical/cloud phone)
-- **Lease burst** (opt-in): when claimable seats of a `kind` are full → k3s `WorkerFactory` (`DESKTOP_BURST_MAX` / `PHONE_BURST_MAX`, default `0`). Phone burst = phone worker Pod + `CloudPhoneProvider` (not glass).
-- **Physical register** (ops): `POST /v1/devices/register` binds glass; optional warm spawn when collection full (`PHONE_WARM_SPAWN_MAX`, default `0`). Agents pin with `seat_id`. Default `kind=phone` lease is **cloud-only**.
+- **Lease burst** (opt-in): when claimable seats of a `kind` are full → k3s `WorkerFactory` (`DESKTOP_BURST_MAX` / `PHONE_BURST_MAX`, default `0`). Phone burst = phone worker Pod + `CloudPhoneProvider` (not a physical phone).
+- **Physical register** (ops): `POST /v1/devices/register` binds a physical phone; optional warm spawn when collection full (`PHONE_WARM_SPAWN_MAX`, default `0`). Agents pin with `seat_id`. Default `kind=phone` lease is **cloud-only**.
 
 Plans: [`.cursor/plans/elastic_seats.plan.md`](.cursor/plans/elastic_seats.plan.md) (desktop + burst factory) · [`.cursor/plans/phone_seat_flows_8a1a7577.plan.md`](.cursor/plans/phone_seat_flows_8a1a7577.plan.md) (phone cloud default, pin, register, phone burst). Constraints: one desktop worker per seat; one ADB bind per phone worker.
 
@@ -200,7 +200,7 @@ Agents can curl this gateway today. When Relay grows phone seats, keep inference
 
 | Relay surface | Suggested change (later) |
 |---------------|--------------------------|
-| `@relay/engines-computer` | Pass `kind: "phone"` on `POST /v1/sessions` (cloud default). Optional `seat_id` when Desk pre-registered glass. Forward phone action bodies (`swipe`, `long_press`, `launch`, `key` with `back`/`home`/`recents`, optional `ref`). Prefer `GET …/observe` when the loop is vision+tree; fall back to screenshot pixels for custom views (Reels, etc.). |
+| `@relay/engines-computer` | Pass `kind: "phone"` on `POST /v1/sessions` (cloud default). Optional `seat_id` when Desk pre-registered a physical phone. Forward phone action bodies (`swipe`, `long_press`, `launch`, `key` with `back`/`home`/`recents`, optional `ref`). Prefer `GET …/observe` when the loop is vision+tree; fall back to screenshot pixels for custom views (Reels, etc.). |
 | `@relay/browse-policy` (or phone system prompt) | Phone priors: swipe-heavy navigation, avoid desktop chords (`ctrl+l`), use `launch`/`uri` to open apps, `home`/`back` for system chrome. HITL **Watch** via lease `vnc_url` (scrcpy-web / `cu-phone.hsv`). |
 | Desk / Settings | `/v1/seats` exposes `kind`, `provider`, `ephemeral`, `warm_spawned`, `bound_serial`. Physical prep: `POST /v1/devices/register` → copy `seat_id` into the run; Watch via `vnc_url`. Cloud: omit `seat_id` on lease (no manual bind). |
 | Desk take-over (intervene) | **relay-os Desk** — when `need_human`, drive via gateway `POST …/action` (same control plane as the agent), not by injecting clicks into scrcpy-web. Physical phone OK for local dogfood. |
@@ -218,7 +218,7 @@ Phone HITL Watch contract (this runtime): Compose `scrcpy-web` on `:6083` is **r
 - Auto CAPTCHA solve
 - Reliable Cmd+V into noVNC canvas (use `type` action or noVNC clipboard UI)
 - Non-ADB cloud tooling inside `CloudPhoneProvider` (different worker/kind)
-- Lease-time spawn of **physical** workers (glass grows via register / warm spawn only)
+- Lease-time spawn of **physical** workers (physical phones grow via register / warm spawn only)
 
 ## Quick bind loop
 

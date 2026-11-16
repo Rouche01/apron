@@ -4,6 +4,15 @@ Worker states:
   free   — available for a new lease (clean / soft-reset as appropriate)
   leased — exclusive input claim (lease TTL)
   parked — warm seat kept for the same session_id/job_id (parked idle TTL)
+
+SessionPool owns the lock, WorkerSlot state machine (lease / park / recycle /
+sweep), and HTTP proxy. Collaborator modules hold kind-specific I/O:
+
+  cloud_phone_seats     — CloudPhoneProvider provision / bind / teardown
+  physical_phone_seats  — physical phone register / bind / unbind / warm spawn / Watch udid
+  burst_seats           — WorkerFactory ephemeral spawn / destroy
+
+Thin wrappers on SessionPool keep FastAPI + test monkeypatches stable.
 """
 
 from __future__ import annotations
@@ -351,6 +360,8 @@ class SessionPool:
                 seats.append(seat)
             return seats
 
+    # --- Collaborator delegates (I/O lives in *_seats modules) ---
+
     def _worker_device_bind(
         self,
         worker_url: str,
@@ -692,6 +703,8 @@ class SessionPool:
             except Exception:
                 data = {"detail": r.text}
             return r.status_code, data
+
+    # --- Physical phone (ops) — see physical_phone_seats ---
 
     def register_physical_device(
         self,

@@ -1,7 +1,7 @@
 """Physical phone register / bind / unbind / warm-spawn helpers used by SessionPool.
 
 Pool keeps the lock and thin wrappers (tests monkeypatch bind/unbind). This module
-owns glass ADB bind, scrcpy Watch sync, and warm physical spawn.
+owns physical-phone ADB bind, scrcpy Watch sync, and warm physical spawn.
 """
 
 from __future__ import annotations
