@@ -15,12 +15,13 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import httpx
 
 import cloud_phone_seats
+import physical_phone_seats
 from inventory import SeatKind, WorkerSpec
+from physical_phone_seats import vnc_url_with_udid
 from workers.base import WorkerFactory, WorkerFactoryError
 from workers.disabled import DisabledWorkerFactory
 
@@ -36,9 +37,6 @@ class SeatPinError(Exception):
         super().__init__(message)
         self.code = code
 
-# Internal scrcpy-web ADB bind API (Compose phone profile). Empty → skip Watch sync.
-SCRCPY_ADB_API_URL = os.environ.get("SCRCPY_ADB_API_URL", "").strip().rstrip("/")
-
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -53,25 +51,6 @@ def _env_burst_max(name: str, default: int = 0) -> int:
         return max(0, int(os.environ.get(name, str(default)) or default))
     except ValueError:
         return default
-
-
-def vnc_url_with_udid(base_vnc: str, serial: str | None) -> str:
-    """Attach ?udid= to phone watch URLs so HITL opens the bound device."""
-    if not serial or not base_vnc:
-        return base_vnc
-    parsed = urlparse(base_vnc)
-    path = parsed.path or ""
-    # Leave desktop noVNC alone.
-    if "vnc.html" in path:
-        return base_vnc
-    qs = parse_qs(parsed.query, keep_blank_values=True)
-    qs["udid"] = [serial]
-    # Drop stale serial= if present; udid is canonical for watch.html.
-    qs.pop("serial", None)
-    new_query = urlencode({k: v[-1] if isinstance(v, list) else v for k, v in qs.items()})
-    return urlunparse(
-        (parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment)
-    )
 
 
 @dataclass
@@ -389,16 +368,9 @@ class SessionPool:
         connect: str,
         unlock: str | None,
     ) -> tuple[int, Any]:
-        body: dict[str, Any] = {"connect": connect, "serial": connect}
-        if unlock:
-            body["unlock"] = unlock
-        with httpx.Client(timeout=max(self._timeout, 60.0)) as client:
-            r = client.post(f"{worker_url}/device/bind", json=body)
-            try:
-                data = r.json()
-            except Exception:
-                data = {"detail": r.text}
-            return r.status_code, data
+        return physical_phone_seats.worker_device_bind(
+            self._timeout, worker_url, connect=connect, unlock=unlock
+        )
 
     def _provision_and_bind_cloud(self, seat_id: str, *, lease_ttl_sec: int) -> None:
         """Provision via CloudPhoneProvider and bind the phone worker (outside lock)."""
@@ -798,101 +770,6 @@ class SessionPool:
                 data = {"detail": r.text}
             return r.status_code, data
 
-    def _pick_free_physical_seat_locked(self, *, prefer_unbound: bool = True) -> WorkerSlot | None:
-        """Choose a free physical phone seat for device registration."""
-        candidates = [
-            s
-            for s in self._slots
-            if s.kind == "phone" and not s.provider and s.state == "free" and not s.ephemeral
-        ]
-        if prefer_unbound:
-            unbound = [s for s in candidates if not s.bound_serial]
-            if unbound:
-                return unbound[0]
-            return None
-        return candidates[0] if candidates else None
-
-    def _warm_spawn_in_use_locked(self) -> int:
-        live = sum(1 for s in self._slots if s.warm_spawned)
-        return live + len(self._warm_inflight)
-
-    def _phone_hitl_vnc_base(self) -> str:
-        return (
-            os.environ.get("PHONE_HITL_URL", "").strip()
-            or "http://localhost:6083/watch.html"
-        )
-
-    def _spawn_warm_physical_seat(self) -> tuple[int, dict[str, Any] | str]:
-        """Spawn a reserved physical phone worker (not lease-burst ephemeral).
-
-        Returns (200, seat_id) or (status, error dict).
-        """
-        max_n = self._phone_warm_spawn_max
-        if max_n <= 0:
-            return 503, {
-                "ok": False,
-                "error": (
-                    "no free unbound physical phone seat "
-                    "(set PHONE_WARM_SPAWN_MAX>0 and SEAT_BURST_BACKEND to auto-spawn)"
-                ),
-                "code": "no_free_phone_seat",
-                "warm_spawn_max": max_n,
-            }
-
-        seat_id = f"phone-warm-{uuid.uuid4().hex[:8]}"
-        with self._lock:
-            if self._warm_spawn_in_use_locked() >= max_n:
-                return 503, {
-                    "ok": False,
-                    "error": "warm physical spawn cap reached",
-                    "code": "warm_spawn_cap",
-                    "warm_spawn_max": max_n,
-                    "warm_spawn_in_use": self._warm_spawn_in_use_locked(),
-                }
-            self._warm_inflight.add(seat_id)
-
-        try:
-            spawned = self._factory.spawn("phone", seat_id=seat_id)
-        except WorkerFactoryError as e:
-            with self._lock:
-                self._warm_inflight.discard(seat_id)
-            return 503, {
-                "ok": False,
-                "error": str(e),
-                "code": e.code or "spawn_failed",
-            }
-        except Exception as e:
-            with self._lock:
-                self._warm_inflight.discard(seat_id)
-            return 503, {
-                "ok": False,
-                "error": str(e),
-                "code": "spawn_failed",
-            }
-
-        hitl = self._phone_hitl_vnc_base()
-        with self._lock:
-            self._warm_inflight.discard(seat_id)
-            slot = WorkerSlot(
-                base_url=spawned.control_url.rstrip("/"),
-                vnc_url=hitl,
-                inventory_vnc_url=hitl,
-                kind="phone",
-                seat_id=spawned.seat_id or seat_id,
-                state="free",
-                ephemeral=False,
-                warm_spawned=True,
-                factory_handle=spawned.handle,
-            )
-            self._slots.append(slot)
-            logger.info(
-                "warm physical seat spawned seat=%s handle=%s factory=%s",
-                slot.seat_id,
-                slot.factory_handle,
-                self._factory.name,
-            )
-            return 200, slot.seat_id
-
     def register_physical_device(
         self,
         *,
@@ -907,79 +784,13 @@ class SessionPool:
         spawns a warm reserved worker (not lease-burst ephemeral) then binds.
         Returns seat_id for pipeline pin. Warm seats survive recycle until unregister.
         """
-        serial_s = (serial or "").strip() or None
-        connect_s = (connect or "").strip() or None
-        unlock_s = (unlock or "").strip() or None
-        pin = (seat_id or "").strip() or None
-        if not serial_s and not connect_s:
-            return 400, {
-                "ok": False,
-                "error": "serial and/or connect required",
-                "code": "missing_target",
-            }
-
-        target_id: str | None = pin
-        spawned_warm = False
-        with self._lock:
-            self._park_expired_leases_locked(_utcnow())
-            if pin:
-                slot = self._find_seat_locked(pin)
-                if not slot:
-                    return 404, {
-                        "ok": False,
-                        "error": f"seat {pin!r} not found",
-                        "code": "seat_not_found",
-                        "seat_id": pin,
-                    }
-                if slot.kind != "phone" or slot.provider:
-                    return 400, {
-                        "ok": False,
-                        "error": "register only applies to physical phone seats",
-                        "code": "not_physical_phone",
-                        "seat_id": pin,
-                    }
-                target_id = slot.seat_id
-            else:
-                slot = self._pick_free_physical_seat_locked(prefer_unbound=True)
-                if slot:
-                    target_id = slot.seat_id
-
-        if target_id is None:
-            status, spawned = self._spawn_warm_physical_seat()
-            if status >= 400:
-                assert isinstance(spawned, dict)
-                return status, spawned
-            assert isinstance(spawned, str)
-            target_id = spawned
-            spawned_warm = True
-
-        assert target_id is not None
-        status, data = self.bind_phone_seat(
-            target_id,
-            serial=serial_s,
-            connect=connect_s,
-            unlock=unlock_s,
+        return physical_phone_seats.register_physical_device(
+            self,
+            serial=serial,
+            connect=connect,
+            unlock=unlock,
+            seat_id=seat_id,
         )
-        if status >= 400:
-            if spawned_warm:
-                # Roll back empty warm seat so cap is not leaked.
-                self.unregister_physical_device(target_id, force=True)
-            out = dict(data) if isinstance(data, dict) else {"ok": False, "detail": data}
-            out.setdefault("ok", False)
-            out.setdefault("code", "bind_failed")
-            out["seat_id"] = target_id
-            return status, out
-
-        return 200, {
-            "ok": True,
-            "seat_id": target_id,
-            "bound_serial": data.get("bound_serial") if isinstance(data, dict) else None,
-            "vnc_url": data.get("vnc_url") if isinstance(data, dict) else None,
-            "warm_spawned": spawned_warm,
-            "worker": data.get("worker") if isinstance(data, dict) else None,
-            "scrcpy": data.get("scrcpy") if isinstance(data, dict) else None,
-            "hint": data.get("hint") if isinstance(data, dict) else None,
-        }
 
     def unregister_physical_device(
         self,
@@ -991,64 +802,7 @@ class SessionPool:
 
         Inventory Compose seats: use /v1/seats/{id}/unbind instead (not removed).
         """
-        pin = (seat_id or "").strip()
-        if not pin:
-            return 400, {
-                "ok": False,
-                "error": "seat_id required",
-                "code": "missing_seat_id",
-            }
-
-        # Best-effort unbind first (skipped if already free of device).
-        unbind_status, unbind_data = self.unbind_phone_seat(pin)
-        if unbind_status == 409 and not force:
-            return 409, {
-                "ok": False,
-                "error": "seat is leased — release or recycle before unregister",
-                "code": "seat_busy",
-                "seat_id": pin,
-                "unbind": unbind_data,
-            }
-
-        destroy_handle: str | None = None
-        with self._lock:
-            slot = self._find_seat_locked(pin)
-            if not slot:
-                return 404, {
-                    "ok": False,
-                    "error": f"seat {pin!r} not found",
-                    "code": "seat_not_found",
-                    "seat_id": pin,
-                }
-            if not slot.warm_spawned:
-                return 400, {
-                    "ok": False,
-                    "error": (
-                        "seat is inventory-reserved — use POST /v1/seats/{id}/unbind; "
-                        "unregister only removes warm-spawned seats"
-                    ),
-                    "code": "not_warm_spawned",
-                    "seat_id": pin,
-                }
-            if slot.state == "leased" and not force:
-                return 409, {
-                    "ok": False,
-                    "error": "seat is leased — release or recycle before unregister",
-                    "code": "seat_busy",
-                    "seat_id": pin,
-                    "session_id": slot.session_id,
-                }
-            destroy_handle = slot.factory_handle
-            self._slots.remove(slot)
-
-        self._destroy_factory_handle(destroy_handle)
-        logger.info("warm physical seat unregistered seat=%s handle=%s", pin, destroy_handle)
-        return 200, {
-            "ok": True,
-            "seat_id": pin,
-            "destroyed": True,
-            "unbind_status": unbind_status,
-        }
+        return physical_phone_seats.unregister_physical_device(self, seat_id, force=force)
 
     def bind_phone_seat(
         self,
@@ -1063,155 +817,12 @@ class SessionPool:
         Refuses while the seat is leased (agent has exclusive claim).
         Optional unlock is for cloud vendors (Phone Harness); omitted for physical.
         """
-        with self._lock:
-            self._park_expired_leases_locked(_utcnow())
-            slot = self._find_seat_locked(seat_id)
-            if not slot:
-                return 404, {"ok": False, "detail": "seat not found"}
-            if slot.kind != "phone":
-                return 400, {"ok": False, "detail": "only phone seats support device bind"}
-            if slot.provider:
-                return 400, {
-                    "ok": False,
-                    "detail": (
-                        "cloud seats are bound by the provider on lease — "
-                        f"manual bind refused (provider={slot.provider})"
-                    ),
-                    "provider": slot.provider,
-                }
-            if slot.state == "leased":
-                return 409, {
-                    "ok": False,
-                    "detail": "seat is leased — release or recycle before rebinding",
-                    "session_id": slot.session_id,
-                }
-            worker_url = slot.base_url
-
-        body: dict[str, Any] = {}
-        if serial:
-            body["serial"] = serial
-        if connect:
-            body["connect"] = connect
-        if unlock:
-            body["unlock"] = unlock
-
-        with httpx.Client(timeout=self._timeout) as client:
-            try:
-                r = client.post(f"{worker_url}/device/bind", json=body)
-                try:
-                    data = r.json()
-                except Exception:
-                    data = {"detail": r.text}
-            except httpx.HTTPError as e:
-                return 503, {"ok": False, "detail": f"phone worker unreachable: {e}"}
-
-        if r.status_code >= 400:
-            detail = data if isinstance(data, dict) else {"detail": data}
-            if isinstance(detail, dict) and "ok" not in detail:
-                detail = {"ok": False, **detail}
-            return r.status_code, detail  # type: ignore[return-value]
-
-        bound = None
-        if isinstance(data, dict):
-            bound = data.get("bound_serial") or serial or connect
-
-        scrcpy: dict[str, Any] | None = None
-        if SCRCPY_ADB_API_URL and (serial or connect):
-            # Scrcpy adb-api: connect only (no unlock). Phone worker holds the unlock.
-            scrcpy_body = {k: v for k, v in body.items() if k != "unlock"}
-            try:
-                with httpx.Client(timeout=self._timeout) as client:
-                    sr = client.post(f"{SCRCPY_ADB_API_URL}/device/bind", json=scrcpy_body)
-                    try:
-                        scrcpy = sr.json()
-                    except Exception:
-                        scrcpy = {"ok": False, "detail": sr.text}
-                    scrcpy["http_status"] = sr.status_code
-            except httpx.HTTPError as e:
-                scrcpy = {"ok": False, "detail": f"scrcpy adb-api unreachable: {e}"}
-
-        with self._lock:
-            slot = self._find_seat_locked(seat_id)
-            if slot:
-                slot.bound_serial = str(bound).strip() if bound else None
-                slot.vnc_url = self._effective_vnc(slot)
-                vnc = slot.vnc_url
-            else:
-                vnc = None
-
-        out: dict[str, Any] = {
-            "ok": bool(isinstance(data, dict) and data.get("ok", True)),
-            "seat_id": seat_id,
-            "bound_serial": bound,
-            "vnc_url": vnc,
-            "worker": data,
-        }
-        if scrcpy is not None:
-            out["scrcpy"] = scrcpy
-        if isinstance(data, dict) and data.get("hint"):
-            out["hint"] = data["hint"]
-        return 200 if out["ok"] else 503, out
+        return physical_phone_seats.bind_phone_seat(
+            self, seat_id, serial=serial, connect=connect, unlock=unlock
+        )
 
     def unbind_phone_seat(self, seat_id: str) -> tuple[int, dict[str, Any]]:
-        with self._lock:
-            self._park_expired_leases_locked(_utcnow())
-            slot = self._find_seat_locked(seat_id)
-            if not slot:
-                return 404, {"ok": False, "detail": "seat not found"}
-            if slot.kind != "phone":
-                return 400, {"ok": False, "detail": "only phone seats support device bind"}
-            if slot.provider:
-                return 400, {
-                    "ok": False,
-                    "detail": (
-                        "cloud seats are unbound by recycle/teardown — "
-                        f"manual unbind refused (provider={slot.provider})"
-                    ),
-                    "provider": slot.provider,
-                }
-            if slot.state == "leased":
-                return 409, {
-                    "ok": False,
-                    "detail": "seat is leased — release or recycle before unbinding",
-                    "session_id": slot.session_id,
-                }
-            worker_url = slot.base_url
-
-        with httpx.Client(timeout=self._timeout) as client:
-            try:
-                r = client.post(f"{worker_url}/device/unbind", json={})
-                try:
-                    data = r.json()
-                except Exception:
-                    data = {"detail": r.text}
-            except httpx.HTTPError as e:
-                return 503, {"ok": False, "detail": f"phone worker unreachable: {e}"}
-
-        if r.status_code >= 400:
-            return r.status_code, data if isinstance(data, dict) else {"ok": False, "detail": data}
-
-        bound_serial: str | None = None
-        with self._lock:
-            slot = self._find_seat_locked(seat_id)
-            if slot:
-                # Fall back to worker-reported bound (env ADB_SERIAL) if any.
-                env_serial = None
-                if isinstance(data, dict):
-                    env_serial = data.get("bound_serial") or data.get("adb_serial_env")
-                slot.bound_serial = str(env_serial).strip() if env_serial else None
-                slot.vnc_url = self._effective_vnc(slot)
-                bound_serial = slot.bound_serial
-                vnc = slot.vnc_url
-            else:
-                vnc = None
-
-        return 200, {
-            "ok": True,
-            "seat_id": seat_id,
-            "bound_serial": bound_serial,
-            "vnc_url": vnc,
-            "worker": data,
-        }
+        return physical_phone_seats.unbind_phone_seat(self, seat_id)
 
     def proxy_get(self, session_id: str, path: str) -> tuple[int, Any]:
         slot = self.worker_for(session_id)
