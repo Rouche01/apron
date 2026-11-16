@@ -17,6 +17,8 @@ Sibling consumer: `~/Projects/relay-os` (`@relay/engines-computer`, CommunityEng
 | `Dockerfile.scrcpy` + `scrcpy-web/` | **Phone HITL** — Mel0nFish/ws-scrcpy-enhanced (scrcpy-server 3.3.4) on host `:6083` (profile `phone`; Android 16 OK) |
 | `Dockerfile.gateway` + `gateway/` | **Gateway** — lease/park/release, proxy, Bearer auth, OpenAPI `:9000` |
 | `gateway/providers/` | **Cloud phone providers** — `CloudPhoneProvider` registry; `phone-harness` first impl |
+| `gateway/workers/` | **Burst WorkerFactory** — disabled by default; k3s backend for on-demand seats |
+| `deploy/k3s/` | **k3s manifests** — namespace + desktop burst Job template |
 | `docker-compose.yml` | `gateway` + `worker-1` + `worker-2`; optional `phone` / `phone-cloud` profiles |
 | `schemas/` + `BINDING.md` | OpenAI / Anthropic-shaped tool maps for any agent host |
 | `profile/` + `scripts/` | Firefox profile / launch helpers |
@@ -103,12 +105,12 @@ Soft **park** keeps the cloud session (billing continues). **Recycle** / parked-
 
 Add another ADB+watch vendor later: new module under `gateway/providers/`, `register()`, add id to `KNOWN_CLOUD_PROVIDERS` in `gateway/inventory.py`, inventory `provider` string. Pool never imports vendor SDKs.
 
-Pool states: **free** → **leased** → **parked** (idle TTL) → free after reset. Capacity is **fixed** today (Compose workers / inventory seats). **Future:** reserved warm seats + optional on-demand **burst for both `desktop` and `phone`** (extra workers when reserved of that kind are busy; cloud phone also provisions harness) — see [`.cursor/plans/elastic_seats.plan.md`](.cursor/plans/elastic_seats.plan.md). Constraints: one desktop worker per seat; one ADB bind per phone worker (no multiplexing).
+Pool states: **free** → **leased** → **parked** (idle TTL) → free after reset. Capacity is **fixed** today (Compose workers / inventory seats). **Elastic (in progress):** keep reserved warm seats on Compose (e.g. 2 desktop + 1 phone); **on-demand burst via k3s** (`WorkerFactory`, `deploy/k3s/`) when reserved of that `kind` are full — see [`.cursor/plans/elastic_seats.plan.md`](.cursor/plans/elastic_seats.plan.md). Default burst off (`DESKTOP_BURST_MAX=0`). Constraints: one desktop worker per seat; one ADB bind per phone worker.
 
 ## Conventions
 
 - **Do not** put LLM calls in the gateway or worker. Bind models via `BINDING.md` / `schemas/`.
-- Prefer **warm pool + park/reset** over spinning containers or K8s unless capacity/isolation forces it.
+- Prefer **warm pool + park/reset** for reserved seats. Use **k3s burst** (not ad-hoc Docker socket) when you need elastic capacity beyond inventory.
 - Keep worker `:8000` off the public/tailnet face; publish noVNC + gateway via Caddy (or localhost only).
 - Display: set **`ASPECT_RATIO`** (e.g. `16:9`, `16:10`) + **`WIDTH`**; `entrypoint.sh` derives `HEIGHT` (default `16:10` → 1280×800). Explicit `WIDTH`+`HEIGHT` with empty `ASPECT_RATIO` still works. VNC uses **local** `resize=scale`, not remote desktop resize.
 - Gateway injects `autoconnect=1&resize=scale` on lease `vnc_url` if missing.
@@ -131,6 +133,9 @@ Pool states: **free** → **leased** → **parked** (idle TTL) → free after re
 | `PHONE_HARNESS_PROFILE_ID` | Optional persistent harness profile |
 | `REQUIRE_WORKER_INVENTORY` | Compose/`Dockerfile.gateway` set to `1` — refuse legacy URL lists |
 | `SESSION_TTL_SEC` / `PARKED_TTL_SEC` | Lease and parked idle TTLs |
+| `SEAT_BURST_BACKEND` | `disabled` (default) or `k3s` — on-demand worker factory |
+| `DESKTOP_BURST_MAX` / `PHONE_BURST_MAX` | Max ephemeral seats beyond reserved (default `0`) |
+| `KUBECONFIG` | kubeconfig for k3s burst (when backend is `k3s`) |
 
 **Per-environment inventory:** do not reuse one `vnc_url` across hosts. Point `.env` at the right file:
 

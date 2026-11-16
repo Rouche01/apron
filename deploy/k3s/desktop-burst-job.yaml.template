@@ -1,0 +1,77 @@
+# Rendered by gateway WorkerFactory (k3s). Placeholders: {{JOB_NAME}} {{NAMESPACE}} {{IMAGE}} {{SEAT_ID}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{JOB_NAME}}
+  namespace: {{NAMESPACE}}
+  labels:
+    app.kubernetes.io/name: computer-desktop-burst
+    app.kubernetes.io/part-of: computer-with-agent
+    computer.burst/seat: "{{SEAT_ID}}"
+    computer.burst/kind: desktop
+spec:
+  ttlSecondsAfterFinished: 120
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: computer-desktop-burst
+        computer.burst/seat: "{{SEAT_ID}}"
+        computer.burst/kind: desktop
+        computer.burst/job: "{{JOB_NAME}}"
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: worker
+          image: {{IMAGE}}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: control
+              containerPort: 8000
+            - name: novnc
+              containerPort: 6080
+          env:
+            - name: ASPECT_RATIO
+              value: "16:10"
+            - name: WIDTH
+              value: "1280"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              memory: "2Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: control
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 30
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{JOB_NAME}}
+  namespace: {{NAMESPACE}}
+  labels:
+    computer.burst/seat: "{{SEAT_ID}}"
+    computer.burst/kind: desktop
+spec:
+  selector:
+    computer.burst/job: "{{JOB_NAME}}"
+  ports:
+    - name: control
+      port: 8000
+      targetPort: control
+    - name: novnc
+      port: 6080
+      targetPort: novnc
