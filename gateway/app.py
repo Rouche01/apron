@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 import providers  # noqa: F401 — registers CloudPhoneProvider impls (phone-harness, …)
 from inventory import SeatKind, load_workers
-from pool import SessionPool
+from pool import SeatPinError, SessionPool
 from providers import registered_names
 from providers.base import CloudPhoneProviderError
 from workers import build_worker_factory
@@ -120,6 +120,13 @@ class LeaseRequest(BaseModel):
     kind: SeatKind = Field(
         default="desktop",
         description="Seat kind to lease: desktop (default) or phone",
+    )
+    seat_id: str | None = Field(
+        default=None,
+        description=(
+            "Exact seat pin. Required to use a physical phone seat; "
+            "without it, kind=phone claims cloud seats only."
+        ),
     )
 
 
@@ -346,7 +353,10 @@ def create_session(
     body: LeaseRequest = LeaseRequest(),
     x_job_id: Annotated[str | None, Header()] = None,
 ):
-    """Lease a free worker of the requested kind, or reattach a parked seat when job_id matches."""
+    """Lease a free worker of the requested kind, or reattach a parked seat when job_id matches.
+
+    Phone without seat_id uses cloud seats only; pass seat_id to pin a physical (or any) seat.
+    """
     job_id = body.job_id or x_job_id
     kind: SeatKind = body.kind
     try:
@@ -355,7 +365,24 @@ def create_session(
             job_id=job_id,
             ttl_sec=body.ttl_sec,
             kind=kind,
+            seat_id=body.seat_id,
         )
+    except SeatPinError as e:
+        status = {
+            "seat_not_found": 404,
+            "seat_kind_mismatch": 400,
+            "seat_busy": 409,
+        }.get(e.code, 400)
+        raise HTTPException(
+            status_code=status,
+            detail={
+                "ok": False,
+                "error": str(e),
+                "kind": kind,
+                "code": e.code,
+                "seat_id": body.seat_id,
+            },
+        ) from e
     except CloudPhoneProviderError as e:
         detail: dict = {
             "ok": False,
@@ -387,6 +414,7 @@ def create_session(
                 "kind": kind,
                 "free": pool.free_count(),
                 "free_for_kind": pool.free_count_for(kind),
+                "claimable_free_for_kind": pool.claimable_free_count_for(kind),
                 "parked": pool.parked_count(),
                 "burst_max": pool.burst_max_for(kind),
                 "burst_in_use": pool.burst_count_for(kind),

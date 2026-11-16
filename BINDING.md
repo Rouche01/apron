@@ -6,6 +6,8 @@ Default display (desktop): **1280×800**. Gateway: `http://localhost:9000` (Comp
 
 Seat **kind** (inventory JSON via `WORKER_INVENTORY_PATH`): `desktop` (default) or `phone`. Optional inventory `provider` (e.g. `phone-harness`) marks a cloud phone seat — same `kind: phone` lease for agents; gateway provisions ADB + `watch_url`. `POST /v1/sessions` body field `kind` selects the pool; omit it for desktop. Lease response includes `kind` and `seat_id`.
 
+**Phone selection:** `{"kind":"phone"}` claims **cloud** seats only (inventory `provider` set). Physical glass is opt-in: pre-bind via ops, then pin with `"seat_id":"phone1"`. `job_id` still reattaches a parked seat of either flavor. Exact pin errors: `404` / `400` / `409` (`seat_not_found` / `seat_kind_mismatch` / `seat_busy`).
+
 **Relay OS:** phase 1 needs no Relay package changes — bind with HTTP as below. Later work in `@relay/engines-computer` / browse-policy is sketched under **Relay OS → Downstream bind notes** in [`AGENTS.md`](AGENTS.md).
 
 ## Lease vs park vs recycle

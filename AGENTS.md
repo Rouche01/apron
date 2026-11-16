@@ -72,7 +72,7 @@ Base: `/v1` · Auth: `Authorization: Bearer $COMPUTER_API_TOKEN` (optional if to
 
 | Method | Path | Notes |
 |--------|------|--------|
-| `POST` | `/v1/sessions` | Lease a free worker (`kind`: `desktop` default, or `phone`) |
+| `POST` | `/v1/sessions` | Lease a free worker (`kind`: `desktop` default, or `phone`). Phone without `seat_id` → cloud only; pass `seat_id` to pin physical (or any) seat. |
 | `POST` | `/v1/sessions/{id}/heartbeat` | Extend lease TTL |
 | `POST` | `/v1/sessions/{id}/acquire` | Re-lease a **parked** desktop |
 | `DELETE` | `/v1/sessions/{id}` | Soft release → **park** (warm); `?recycle=true` wipes + frees |

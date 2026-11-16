@@ -29,6 +29,14 @@ logger = logging.getLogger("computer.gateway.pool")
 
 SlotState = Literal["free", "leased", "parked"]
 
+
+class SeatPinError(Exception):
+    """Exact seat_id lease failed (not found / busy / kind mismatch)."""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
 # Internal scrcpy-web ADB bind API (Compose phone profile). Empty → skip Watch sync.
 SCRCPY_ADB_API_URL = os.environ.get("SCRCPY_ADB_API_URL", "").strip().rstrip("/")
 
@@ -203,6 +211,22 @@ class SessionPool:
         with self._lock:
             self._park_expired_leases_locked(_utcnow())
             return sum(1 for s in self._slots if s.state == "free" and s.kind == kind)
+
+    def claimable_free_count_for(self, kind: SeatKind) -> int:
+        """Free seats the default lease path will actually claim.
+
+        Phone without seat_id is cloud-only (provider set); physical seats need a pin.
+        """
+        with self._lock:
+            self._park_expired_leases_locked(_utcnow())
+            n = 0
+            for s in self._slots:
+                if s.state != "free" or s.kind != kind:
+                    continue
+                if kind == "phone" and not s.provider:
+                    continue
+                n += 1
+            return n
 
     def burst_max_for(self, kind: SeatKind) -> int:
         if kind == "phone":
@@ -493,19 +517,25 @@ class SessionPool:
         job_id: str | None = None,
         ttl_sec: int | None = None,
         kind: SeatKind = "desktop",
+        seat_id: str | None = None,
     ) -> LeaseInfo | None:
         """Reattach a parked seat for job_id if present; else claim a free worker of kind.
 
-        When reserved seats of kind are full and BURST_MAX > 0, spawn via WorkerFactory.
-        Cloud seats: provision + worker bind after claim. Raises CloudPhoneProviderError
-        on provider/bind failure (seat returned to free). Raises WorkerFactoryError on
-        burst spawn failure.
+        Phone without seat_id: cloud seats only (inventory provider set). Physical phone
+        seats require an exact seat_id pin. Optional seat_id claims that seat if free or
+        parked (raises SeatPinError otherwise).
+
+        When reserved claimable seats of kind are full and BURST_MAX > 0, spawn via
+        WorkerFactory. Cloud seats: provision + worker bind after claim. Raises
+        CloudPhoneProviderError on provider/bind failure (seat returned to free).
+        Raises WorkerFactoryError on burst spawn failure.
         """
         ttl = _clamp_ttl(ttl_sec if ttl_sec is not None else self._default_ttl)
         now = _utcnow()
         cloud_reattach_seat: str | None = None
         cloud_provision_seat: str | None = None
         info: LeaseInfo | None = None
+        pin = (seat_id or "").strip() or None
 
         with self._lock:
             self._park_expired_leases_locked(now)
@@ -526,9 +556,44 @@ class SessionPool:
                             cloud_reattach_seat = slot.seat_id
                         break
 
+            if info is None and pin:
+                slot = self._find_seat_locked(pin)
+                if not slot:
+                    raise SeatPinError(f"seat {pin!r} not found", code="seat_not_found")
+                if slot.kind != kind:
+                    raise SeatPinError(
+                        f"seat {pin!r} is kind={slot.kind!r}, requested {kind!r}",
+                        code="seat_kind_mismatch",
+                    )
+                if slot.state == "leased":
+                    raise SeatPinError(f"seat {pin!r} is already leased", code="seat_busy")
+                if slot.state not in ("free", "parked"):
+                    raise SeatPinError(f"seat {pin!r} is unavailable", code="seat_busy")
+                if slot.state == "free":
+                    slot.session_id = str(uuid.uuid4())
+                    slot.agent_id = agent_id
+                    slot.job_id = job_id
+                else:
+                    if agent_id is not None:
+                        slot.agent_id = agent_id
+                    if job_id is not None:
+                        slot.job_id = job_id
+                slot.state = "leased"
+                slot.parked_at = None
+                slot.expires_at = now + timedelta(seconds=ttl)
+                info = self._lease_info(slot)
+                if slot.provider:
+                    if slot.provider_session_id:
+                        cloud_reattach_seat = slot.seat_id
+                    else:
+                        cloud_provision_seat = slot.seat_id
+
             if info is None:
                 for slot in self._slots:
                     if slot.state != "free" or slot.kind != kind:
+                        continue
+                    # Phone default: cloud only; physical requires seat_id pin above.
+                    if kind == "phone" and not slot.provider:
                         continue
                     sid = str(uuid.uuid4())
                     slot.state = "leased"
@@ -543,6 +608,9 @@ class SessionPool:
                     break
 
         if info is None:
+            # Exact pin never falls through to burst.
+            if pin:
+                return None
             return self._lease_burst(
                 kind=kind,
                 agent_id=agent_id,
