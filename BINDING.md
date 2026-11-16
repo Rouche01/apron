@@ -6,7 +6,7 @@ Default display (desktop): **1280×800**. Gateway: `http://localhost:9000` (Comp
 
 Seat **kind** (inventory JSON via `WORKER_INVENTORY_PATH`): `desktop` (default) or `phone`. Optional inventory `provider` (e.g. `phone-harness`) marks a cloud phone seat — same `kind: phone` lease for agents; gateway provisions ADB + `watch_url`. `POST /v1/sessions` body field `kind` selects the pool; omit it for desktop. Lease response includes `kind` and `seat_id`.
 
-**Phone selection:** `{"kind":"phone"}` claims **cloud** seats only (inventory `provider` set). Physical glass is opt-in: pre-bind via ops, then pin with `"seat_id":"phone1"`. `job_id` still reattaches a parked seat of either flavor. Exact pin errors: `404` / `400` / `409` (`seat_not_found` / `seat_kind_mismatch` / `seat_busy`).
+**Phone selection:** `{"kind":"phone"}` claims **cloud** seats only (inventory `provider` set), then phone **lease-burst** if `PHONE_BURST_MAX>0`. Physical glass is opt-in: register/bind via ops, then pin with `"seat_id"`. `job_id` still reattaches a parked seat of either flavor. Exact pin errors: `404` / `400` / `409` (`seat_not_found` / `seat_kind_mismatch` / `seat_busy`). Full model: [`.cursor/plans/phone_seat_flows_8a1a7577.plan.md`](.cursor/plans/phone_seat_flows_8a1a7577.plan.md).
 
 **Register physical (ops):** `POST /v1/devices/register` with `{"connect":"ip:5555"}` (or `serial`) binds the first free unbound physical seat and returns `{seat_id, bound_serial, vnc_url}` for the agent pin. Optional `"seat_id"` rebinds that seat. If none are free and `PHONE_WARM_SPAWN_MAX>0` with `SEAT_BURST_BACKEND=k3s`, spawns a **warm reserved** phone worker (`warm_spawned`, survives recycle) then binds. Tear down with `POST /v1/devices/unregister` `{"seat_id":"phone-warm-…"}` (inventory seats: `/v1/seats/{id}/unbind` only).
 
@@ -187,15 +187,15 @@ Inventory seat with `"provider": "phone-harness"` (see `gateway/workers.with-pho
 #       PHONE_HARNESS_API_KEY=pck_…
 # docker compose up --build -d
 
-curl -s -H "$AUTH" "$GW/v1/seats" | jq '.seats[] | {id, kind, provider, state, vnc_url}'
+curl -s -H "$AUTH" "$GW/v1/seats" | jq '.seats[] | {id, kind, provider, state, vnc_url, ephemeral, warm_spawned, bound_serial}'
 
-# If physical phone1 is also free, lease may claim it first — recycle/park it or
-# use only phone-cloud inventory / free the physical seat first.
+# kind=phone without seat_id → cloud only (skips free physical seats).
 SESSION=$(curl -s -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"kind":"phone","agent_id":"cloud-demo","ttl_sec":600}' \
   "$GW/v1/sessions")
 echo "$SESSION" | jq '{session_id, seat_id, kind, vnc_url}'
 SID=$(echo "$SESSION" | jq -r .session_id)
+# expect seat_id=phone-cloud1 (or phone-burst-* when PHONE_BURST_MAX>0 and reserved cloud is full)
 # Open .vnc_url in a browser — provider watch_url (view-only). No Allow prompt.
 
 curl -s -H "$AUTH" "$GW/v1/sessions/$SID/observe" | jq '{geometry, element_count}'
@@ -211,14 +211,37 @@ curl -s -H "$AUTH" -X DELETE "$GW/v1/sessions/$SID?recycle=true"
 
 Adding another ADB+watch cloud vendor: implement `CloudPhoneProvider` in `gateway/providers/`, register it, extend `KNOWN_CLOUD_PROVIDERS`, set inventory `provider`.
 
+### Physical phone — register then pin
+
 ```bash
-# Lease a physical phone seat (Compose profile phone + workers.with-phone.json)
+# Compose profile phone (+ optional phone-cloud). Allow once on the device first.
+REG=$(curl -s -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"connect":"192.168.178.65:5555"}' \
+  "$GW/v1/devices/register")
+echo "$REG" | jq '{seat_id, bound_serial, vnc_url, warm_spawned}'
+SEAT=$(echo "$REG" | jq -r .seat_id)
+
+# Agent / pipeline: pin the prepared glass (cloud default will not pick it otherwise)
 SESSION=$(curl -s -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"kind":"phone","agent_id":"demo","ttl_sec":600}' \
+  -d "{\"kind\":\"phone\",\"seat_id\":\"$SEAT\",\"agent_id\":\"demo\",\"ttl_sec\":600}" \
   "$GW/v1/sessions")
 SID=$(echo "$SESSION" | jq -r .session_id)
 # Watch: open .vnc_url (scrcpy-web /watch.html?udid=… on :6083) — read-only HITL
-echo "$SESSION" | jq '{session_id, kind, vnc_url}'
+echo "$SESSION" | jq '{session_id, kind, seat_id, vnc_url}'
+
+# Warm-spawned seats only — destroy worker when glass leaves the fleet:
+# curl -s -H "$AUTH" -H 'Content-Type: application/json' \
+#   -d "{\"seat_id\":\"$SEAT\"}" "$GW/v1/devices/unregister"
+```
+
+```bash
+# Legacy: bind a known seat id, then lease with the same seat_id
+# POST /v1/seats/phone1/bind  {"connect":"…"}
+SESSION=$(curl -s -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"kind":"phone","seat_id":"phone1","agent_id":"demo","ttl_sec":600}' \
+  "$GW/v1/sessions")
+SID=$(echo "$SESSION" | jq -r .session_id)
+echo "$SESSION" | jq '{session_id, kind, seat_id, vnc_url}'
 
 # Vision + tree
 OBS=$(curl -s -H "$AUTH" "$GW/v1/sessions/$SID/observe")

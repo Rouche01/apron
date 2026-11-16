@@ -56,7 +56,9 @@ Each desktop Job gets a Service (`control:8000`, `novnc:6080`). Expose Watch via
 
 `phone-burst-job.yaml.template` runs the phone worker (`ALLOW_EMPTY_DEVICE=1`, control `:8000`). After Pod ready the pool sets `provider=PHONE_BURST_PROVIDER` and runs `CloudPhoneProvider.provision` + ADB bind. Lease `vnc_url` is the vendor **watch_url** (not scrcpy). Recycle → provider teardown + Job delete.
 
-See [`.cursor/plans/phone_seat_flows_8a1a7577.plan.md`](../../.cursor/plans/phone_seat_flows_8a1a7577.plan.md).
+Phone **lease** overflow uses this Job + `PHONE_BURST_MAX` / `PHONE_BURST_PROVIDER`. Physical glass growth is separate (`POST /v1/devices/register`, `PHONE_WARM_SPAWN_MAX`) — same phone image template, warm seat not ephemeral burst.
+
+See [`.cursor/plans/phone_seat_flows_8a1a7577.plan.md`](../../.cursor/plans/phone_seat_flows_8a1a7577.plan.md) and [`.cursor/plans/elastic_seats.plan.md`](../../.cursor/plans/elastic_seats.plan.md).
 
 ## Why not Nomad
 

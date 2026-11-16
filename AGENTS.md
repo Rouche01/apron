@@ -107,7 +107,15 @@ Soft **park** keeps the cloud session (billing continues). **Recycle** / parked-
 
 Add another ADB+watch vendor later: new module under `gateway/providers/`, `register()`, add id to `KNOWN_CLOUD_PROVIDERS` in `gateway/inventory.py`, inventory `provider` string. Pool never imports vendor SDKs.
 
-Pool states: **free** → **leased** → **parked** (idle TTL) → free after reset (ephemeral burst seats are **destroyed**, not returned to free). Capacity: **reserved** Compose inventory + optional **k3s burst** when reserved of that `kind` are full (`WorkerFactory`, `DESKTOP_BURST_MAX` / `PHONE_BURST_MAX`, default `0`). See [`.cursor/plans/elastic_seats.plan.md`](.cursor/plans/elastic_seats.plan.md). Constraints: one desktop worker per seat; one ADB bind per phone worker.
+Pool states: **free** → **leased** → **parked** (idle TTL) → free after reset (ephemeral **lease-burst** seats are **destroyed**, not returned to free; **warm-spawned** physical seats survive recycle until `POST /v1/devices/unregister`).
+
+Capacity:
+
+- **Reserved** Compose inventory (desktop + optional physical/cloud phone)
+- **Lease burst** (opt-in): when claimable seats of a `kind` are full → k3s `WorkerFactory` (`DESKTOP_BURST_MAX` / `PHONE_BURST_MAX`, default `0`). Phone burst = phone worker Pod + `CloudPhoneProvider` (not glass).
+- **Physical register** (ops): `POST /v1/devices/register` binds glass; optional warm spawn when collection full (`PHONE_WARM_SPAWN_MAX`, default `0`). Agents pin with `seat_id`. Default `kind=phone` lease is **cloud-only**.
+
+Plans: [`.cursor/plans/elastic_seats.plan.md`](.cursor/plans/elastic_seats.plan.md) (desktop + burst factory) · [`.cursor/plans/phone_seat_flows_8a1a7577.plan.md`](.cursor/plans/phone_seat_flows_8a1a7577.plan.md) (phone cloud default, pin, register, phone burst). Constraints: one desktop worker per seat; one ADB bind per phone worker.
 
 ## Conventions
 
@@ -192,24 +200,25 @@ Agents can curl this gateway today. When Relay grows phone seats, keep inference
 
 | Relay surface | Suggested change (later) |
 |---------------|--------------------------|
-| `@relay/engines-computer` | Pass `kind: "phone"` on `POST /v1/sessions`. Forward phone action bodies (`swipe`, `long_press`, `launch`, `key` with `back`/`home`/`recents`, optional `ref`). Prefer `GET …/observe` when the loop is vision+tree; fall back to screenshot pixels for custom views (Reels, etc.). |
+| `@relay/engines-computer` | Pass `kind: "phone"` on `POST /v1/sessions` (cloud default). Optional `seat_id` when Desk pre-registered glass. Forward phone action bodies (`swipe`, `long_press`, `launch`, `key` with `back`/`home`/`recents`, optional `ref`). Prefer `GET …/observe` when the loop is vision+tree; fall back to screenshot pixels for custom views (Reels, etc.). |
 | `@relay/browse-policy` (or phone system prompt) | Phone priors: swipe-heavy navigation, avoid desktop chords (`ctrl+l`), use `launch`/`uri` to open apps, `home`/`back` for system chrome. HITL **Watch** via lease `vnc_url` (scrcpy-web / `cu-phone.hsv`). |
-| Desk / Settings | Inventory already exposes `kind` (+ `provider` for cloud) on `/v1/seats`; show phone seats separately from desktop noVNC. Open `vnc_url` for read-only Watch (scrcpy or harness watch_url). Physical: `GET …/devices` + `POST …/bind` (Allow once). Cloud: no manual bind. |
+| Desk / Settings | `/v1/seats` exposes `kind`, `provider`, `ephemeral`, `warm_spawned`, `bound_serial`. Physical prep: `POST /v1/devices/register` → copy `seat_id` into the run; Watch via `vnc_url`. Cloud: omit `seat_id` on lease (no manual bind). |
 | Desk take-over (intervene) | **relay-os Desk** — when `need_human`, drive via gateway `POST …/action` (same control plane as the agent), not by injecting clicks into scrcpy-web. Physical phone OK for local dogfood. |
 | ThinkPad Caddy / `cu-phone.hsv` | **Deploy + Desk docs** (`relay-os/apps/relay-desk/LAPTOP.md`) — live Caddyfile Host route → `127.0.0.1:6083`. This repo documents the snippet and ships `workers.hsv.example.json`; applying Caddy on the host is not a computer-with-agent code change. |
 | CommunityEngager | Stay **desktop evidence-only** unless an explicit phone transport is designed; do not silently lease `kind=phone` for Reddit. |
 
 Park/recycle semantics: phone park → soft force-stop (packages stay logged in); recycle → `pm clear` on configured packages — map Relay “job done” to recycle only when a clean app state is intended.
 
-Phone HITL Watch contract (this runtime): Compose `scrcpy-web` on `:6083` is **read-only**; inventory `vnc_url` is `http://localhost:6083/watch.html` or `https://cu-phone.hsv/watch.html`. Cloud seats use the provider `watch_url` instead. See `.cursor/plans/phone_scrcpy_web_hitl.plan.md` and `.cursor/plans/phone_harness_cloud_*.plan.md` (or Cursor plan **Phone Harness cloud**).
+Phone HITL Watch contract (this runtime): Compose `scrcpy-web` on `:6083` is **read-only**; inventory `vnc_url` is `http://localhost:6083/watch.html` or `https://cu-phone.hsv/watch.html`. Cloud seats use the provider `watch_url` instead. See [`.cursor/plans/phone_seat_flows_8a1a7577.plan.md`](.cursor/plans/phone_seat_flows_8a1a7577.plan.md) (selection + register + burst) and older HITL notes under `.cursor/plans/phone_scrcpy_web_hitl.plan.md` if present.
 
 ## Out of scope (for now)
 
-- On-demand container/Pod per lease (cloud concurrency = inventory seat count)
+- Multi-cluster / HPA-based scaling (lease-demand burst is opt-in via `*_BURST_MAX`; see elastic + phone_seat_flows plans)
 - Gateway-hosted vision/LLM loops
 - Auto CAPTCHA solve
 - Reliable Cmd+V into noVNC canvas (use `type` action or noVNC clipboard UI)
 - Non-ADB cloud tooling inside `CloudPhoneProvider` (different worker/kind)
+- Lease-time spawn of **physical** workers (glass grows via register / warm spawn only)
 
 ## Quick bind loop
 
