@@ -297,13 +297,63 @@ def seat_device(seat_id: str, _: AuthDep):
     return data
 
 
+class DeviceRegisterBody(BaseModel):
+    """Register a physical phone onto a free reserved seat (ops / Desk)."""
+
+    serial: str | None = Field(
+        default=None,
+        description="adb serial (USB id or ip:port after connect)",
+    )
+    connect: str | None = Field(
+        default=None,
+        description="Wireless adb host:port — runs adb connect, then binds",
+    )
+    unlock: str | None = Field(
+        default=None,
+        description="Optional unlock after connect (usually omitted for physical)",
+    )
+    seat_id: str | None = Field(
+        default=None,
+        description="Optional exact physical seat; otherwise first free unbound phone seat",
+    )
+
+
+@app.post("/v1/devices/register", tags=["ops"])
+def devices_register(body: DeviceRegisterBody, _: AuthDep):
+    """Bind a physical device to a free phone seat; return seat_id for lease pin.
+
+    Phase 1: does not spawn workers — needs an existing free unbound physical seat
+    (or pass seat_id to rebind that seat). Human Allow once on first ADB trust.
+    Pipeline then leases with {\"kind\":\"phone\",\"seat_id\":…}.
+    """
+    if not (body.serial or "").strip() and not (body.connect or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "error": "serial and/or connect required",
+                "code": "missing_target",
+            },
+        )
+    status, data = pool.register_physical_device(
+        serial=(body.serial or "").strip() or None,
+        connect=(body.connect or "").strip() or None,
+        unlock=(body.unlock or "").strip() or None,
+        seat_id=(body.seat_id or "").strip() or None,
+    )
+    if status >= 400:
+        raise HTTPException(status_code=status, detail=data)
+    return data
+
+
 @app.post("/v1/seats/{seat_id}/bind", tags=["ops"])
 def seat_bind(seat_id: str, body: SeatBindBody, _: AuthDep):
     """Bind a phone seat to a device without recreating containers.
 
     Human must tap Allow / Authorize on the phone the first time this host's
     adb keys appear (Compose mounts ~/.android into phone-1 + scrcpy-web).
-    Refuses while the seat is leased.
+    Refuses while the seat is leased. Prefer POST /v1/devices/register when
+    Desk should pick a free seat and return seat_id for the agent pin.
     """
     if not (body.serial or "").strip() and not (body.connect or "").strip():
         raise HTTPException(status_code=400, detail="serial and/or connect required")

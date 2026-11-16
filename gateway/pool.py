@@ -894,6 +894,98 @@ class SessionPool:
                 data = {"detail": r.text}
             return r.status_code, data
 
+    def _pick_free_physical_seat_locked(self, *, prefer_unbound: bool = True) -> WorkerSlot | None:
+        """Choose a free physical phone seat for device registration (phase 1)."""
+        candidates = [
+            s
+            for s in self._slots
+            if s.kind == "phone" and not s.provider and s.state == "free" and not s.ephemeral
+        ]
+        if prefer_unbound:
+            unbound = [s for s in candidates if not s.bound_serial]
+            if unbound:
+                return unbound[0]
+            return None
+        return candidates[0] if candidates else None
+
+    def register_physical_device(
+        self,
+        *,
+        serial: str | None = None,
+        connect: str | None = None,
+        unlock: str | None = None,
+        seat_id: str | None = None,
+    ) -> tuple[int, dict[str, Any]]:
+        """Ops: bind a newly registered physical phone onto a reserved seat.
+
+        Phase 1: requires an existing free physical seat (optional exact seat_id).
+        Auto-spawn when none are free is phase 2. Returns seat_id for pipeline pin.
+        """
+        serial_s = (serial or "").strip() or None
+        connect_s = (connect or "").strip() or None
+        unlock_s = (unlock or "").strip() or None
+        pin = (seat_id or "").strip() or None
+        if not serial_s and not connect_s:
+            return 400, {
+                "ok": False,
+                "error": "serial and/or connect required",
+                "code": "missing_target",
+            }
+
+        target_id: str | None = pin
+        with self._lock:
+            self._park_expired_leases_locked(_utcnow())
+            if pin:
+                slot = self._find_seat_locked(pin)
+                if not slot:
+                    return 404, {
+                        "ok": False,
+                        "error": f"seat {pin!r} not found",
+                        "code": "seat_not_found",
+                        "seat_id": pin,
+                    }
+                if slot.kind != "phone" or slot.provider:
+                    return 400, {
+                        "ok": False,
+                        "error": "register only applies to physical phone seats",
+                        "code": "not_physical_phone",
+                        "seat_id": pin,
+                    }
+                target_id = slot.seat_id
+            else:
+                slot = self._pick_free_physical_seat_locked(prefer_unbound=True)
+                if not slot:
+                    return 503, {
+                        "ok": False,
+                        "error": "no free unbound physical phone seat",
+                        "code": "no_free_phone_seat",
+                    }
+                target_id = slot.seat_id
+
+        assert target_id is not None
+        status, data = self.bind_phone_seat(
+            target_id,
+            serial=serial_s,
+            connect=connect_s,
+            unlock=unlock_s,
+        )
+        if status >= 400:
+            out = dict(data) if isinstance(data, dict) else {"ok": False, "detail": data}
+            out.setdefault("ok", False)
+            out.setdefault("code", "bind_failed")
+            out["seat_id"] = target_id
+            return status, out
+
+        return 200, {
+            "ok": True,
+            "seat_id": target_id,
+            "bound_serial": data.get("bound_serial") if isinstance(data, dict) else None,
+            "vnc_url": data.get("vnc_url") if isinstance(data, dict) else None,
+            "worker": data.get("worker") if isinstance(data, dict) else None,
+            "scrcpy": data.get("scrcpy") if isinstance(data, dict) else None,
+            "hint": data.get("hint") if isinstance(data, dict) else None,
+        }
+
     def bind_phone_seat(
         self,
         seat_id: str,

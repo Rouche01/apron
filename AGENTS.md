@@ -83,6 +83,7 @@ Base: `/v1` · Auth: `Authorization: Bearer $COMPUTER_API_TOKEN` (optional if to
 | `GET` | `/v1/seats` | Per-worker inventory (`kind` + `free`/`leased`/`parked` + `session_id`/`vnc_url`/`job_id`) |
 | `GET` | `/v1/seats/{id}/devices` | Phone: adb devices visible to the seat |
 | `GET` | `/v1/seats/{id}/device` | Phone: current bind + selected device |
+| `POST` | `/v1/devices/register` | Phone (physical): pick free unbound seat (or `seat_id`) + bind; returns `seat_id` for lease pin — phase 1 no spawn |
 | `POST` | `/v1/seats/{id}/bind` | Phone (physical): runtime bind (`serial` / `connect` / optional `unlock`) — refused while leased or on cloud seats |
 | `POST` | `/v1/seats/{id}/unbind` | Phone (physical): clear runtime bind — refused on cloud seats |
 | `GET` | `/health` · `/ready` | Ops aggregates |

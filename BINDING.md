@@ -8,6 +8,8 @@ Seat **kind** (inventory JSON via `WORKER_INVENTORY_PATH`): `desktop` (default) 
 
 **Phone selection:** `{"kind":"phone"}` claims **cloud** seats only (inventory `provider` set). Physical glass is opt-in: pre-bind via ops, then pin with `"seat_id":"phone1"`. `job_id` still reattaches a parked seat of either flavor. Exact pin errors: `404` / `400` / `409` (`seat_not_found` / `seat_kind_mismatch` / `seat_busy`).
 
+**Register physical (ops):** `POST /v1/devices/register` with `{"connect":"ip:5555"}` (or `serial`) binds the first free unbound physical seat and returns `{seat_id, bound_serial, vnc_url}` for the agent pin. Optional `"seat_id"` rebinds that seat. Phase 1 does not spawn workers (`503` / `no_free_phone_seat` when none are free).
+
 **Relay OS:** phase 1 needs no Relay package changes — bind with HTTP as below. Later work in `@relay/engines-computer` / browse-policy is sketched under **Relay OS → Downstream bind notes** in [`AGENTS.md`](AGENTS.md).
 
 ## Lease vs park vs recycle
