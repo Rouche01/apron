@@ -105,7 +105,7 @@ Soft **park** keeps the cloud session (billing continues). **Recycle** / parked-
 
 Add another ADB+watch vendor later: new module under `gateway/providers/`, `register()`, add id to `KNOWN_CLOUD_PROVIDERS` in `gateway/inventory.py`, inventory `provider` string. Pool never imports vendor SDKs.
 
-Pool states: **free** → **leased** → **parked** (idle TTL) → free after reset. Capacity is **fixed** today (Compose workers / inventory seats). **Elastic (in progress):** keep reserved warm seats on Compose (e.g. 2 desktop + 1 phone); **on-demand burst via k3s** (`WorkerFactory`, `deploy/k3s/`) when reserved of that `kind` are full — see [`.cursor/plans/elastic_seats.plan.md`](.cursor/plans/elastic_seats.plan.md). Default burst off (`DESKTOP_BURST_MAX=0`). Constraints: one desktop worker per seat; one ADB bind per phone worker.
+Pool states: **free** → **leased** → **parked** (idle TTL) → free after reset (ephemeral burst seats are **destroyed**, not returned to free). Capacity: **reserved** Compose inventory + optional **k3s burst** when reserved of that `kind` are full (`WorkerFactory`, `DESKTOP_BURST_MAX` / `PHONE_BURST_MAX`, default `0`). See [`.cursor/plans/elastic_seats.plan.md`](.cursor/plans/elastic_seats.plan.md). Constraints: one desktop worker per seat; one ADB bind per phone worker.
 
 ## Conventions
 

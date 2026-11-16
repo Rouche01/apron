@@ -22,6 +22,8 @@ import httpx
 from inventory import SeatKind, WorkerSpec
 from providers import get as get_cloud_provider
 from providers.base import CloudPhoneProviderError, CloudSession
+from workers.base import WorkerFactory, WorkerFactoryError
+from workers.disabled import DisabledWorkerFactory
 
 logger = logging.getLogger("computer.gateway.pool")
 
@@ -37,6 +39,13 @@ def _utcnow() -> datetime:
 
 def _clamp_ttl(ttl: int, *, minimum: int = 30) -> int:
     return ttl if ttl >= minimum else minimum
+
+
+def _env_burst_max(name: str, default: int = 0) -> int:
+    try:
+        return max(0, int(os.environ.get(name, str(default)) or default))
+    except ValueError:
+        return default
 
 
 def vnc_url_with_udid(base_vnc: str, serial: str | None) -> str:
@@ -76,6 +85,8 @@ class WorkerSlot:
     provider_session_id: str | None = None  # live cloud session
     cloud_watch_url: str | None = None
     cloud_unlock: str | None = None
+    ephemeral: bool = False  # burst seat (not in reserved inventory)
+    factory_handle: str | None = None  # WorkerFactory.destroy id
 
 
 @dataclass
@@ -104,14 +115,30 @@ class SessionPool:
         default_ttl_sec: int = 600,
         parked_ttl_sec: int = 1800,
         http_timeout: float = 30.0,
+        worker_factory: WorkerFactory | None = None,
+        desktop_burst_max: int | None = None,
+        phone_burst_max: int | None = None,
     ) -> None:
         if not workers:
             raise ValueError("at least one worker is required")
         self._default_ttl = default_ttl_sec
         self._parked_ttl = max(30, parked_ttl_sec)
         self._timeout = http_timeout
+        self._factory: WorkerFactory = worker_factory or DisabledWorkerFactory()
+        self._desktop_burst_max = (
+            desktop_burst_max
+            if desktop_burst_max is not None
+            else _env_burst_max("DESKTOP_BURST_MAX")
+        )
+        self._phone_burst_max = (
+            phone_burst_max
+            if phone_burst_max is not None
+            else _env_burst_max("PHONE_BURST_MAX")
+        )
         self._lock = threading.Lock()
         self._slots: list[WorkerSlot] = []
+        # seat_ids currently mid-spawn (count toward burst cap)
+        self._burst_inflight: set[str] = set()
         for i, w in enumerate(workers):
             if isinstance(w, WorkerSpec):
                 self._slots.append(
@@ -177,6 +204,32 @@ class SessionPool:
             self._park_expired_leases_locked(_utcnow())
             return sum(1 for s in self._slots if s.state == "free" and s.kind == kind)
 
+    def burst_max_for(self, kind: SeatKind) -> int:
+        if kind == "phone":
+            return self._phone_burst_max
+        return self._desktop_burst_max
+
+    def burst_count_for(self, kind: SeatKind) -> int:
+        with self._lock:
+            return self._burst_in_use_locked(kind)
+
+    def _burst_in_use_locked(self, kind: SeatKind) -> int:
+        live = sum(1 for s in self._slots if s.ephemeral and s.kind == kind)
+        inflight = sum(
+            1
+            for sid in self._burst_inflight
+            if sid.startswith("phone-burst-" if kind == "phone" else "desk-burst-")
+        )
+        return live + inflight
+
+    def _destroy_factory_handle(self, handle: str | None) -> None:
+        if not handle:
+            return
+        try:
+            self._factory.destroy(handle)
+        except Exception as e:
+            logger.warning("burst destroy failed handle=%s: %s", handle, e)
+
     def _cloud_teardown_payload_locked(self, slot: WorkerSlot) -> dict[str, str] | None:
         if slot.provider and slot.provider_session_id:
             return {
@@ -217,21 +270,32 @@ class SessionPool:
 
     def _sweep_parked_idle_locked(
         self, now: datetime
-    ) -> tuple[list[str], list[dict[str, str]]]:
-        """Free parked slots past idle TTL; return reset URLs + cloud teardowns."""
+    ) -> tuple[list[str], list[dict[str, str]], list[str]]:
+        """Free parked slots past idle TTL.
+
+        Returns (reset_urls for reserved seats, cloud teardowns, burst destroy handles).
+        Ephemeral seats are removed (not returned to free).
+        """
         urls: list[str] = []
         teardowns: list[dict[str, str]] = []
-        for slot in self._slots:
+        destroy_handles: list[str] = []
+        for slot in list(self._slots):
             if slot.state != "parked" or slot.parked_at is None:
                 continue
             age = (now - slot.parked_at).total_seconds()
-            if age >= self._parked_ttl:
+            if age < self._parked_ttl:
+                continue
+            td = self._cloud_teardown_payload_locked(slot)
+            if td:
+                teardowns.append(td)
+            if slot.ephemeral:
+                if slot.factory_handle:
+                    destroy_handles.append(slot.factory_handle)
+                self._slots.remove(slot)
+            else:
                 urls.append(slot.base_url)
-                td = self._cloud_teardown_payload_locked(slot)
-                if td:
-                    teardowns.append(td)
                 self._clear_to_free_locked(slot)
-        return urls, teardowns
+        return urls, teardowns, destroy_handles
 
     def _teardown_cloud(self, payload: dict[str, str]) -> None:
         provider_name = payload.get("provider") or ""
@@ -253,9 +317,11 @@ class SessionPool:
         with self._lock:
             now = _utcnow()
             self._park_expired_leases_locked(now)
-            urls, teardowns = self._sweep_parked_idle_locked(now)
+            urls, teardowns, destroy_handles = self._sweep_parked_idle_locked(now)
         for td in teardowns:
             self._teardown_cloud(td)
+        for handle in destroy_handles:
+            self._destroy_factory_handle(handle)
         return urls
 
     def free_count(self) -> int:
@@ -291,6 +357,7 @@ class SessionPool:
                     "job_id": slot.job_id,
                     "expires_at": slot.expires_at.isoformat() if slot.expires_at else None,
                     "parked_at": slot.parked_at.isoformat() if slot.parked_at else None,
+                    "ephemeral": slot.ephemeral,
                 }
                 if slot.kind == "phone":
                     seat["bound_serial"] = slot.bound_serial
@@ -429,8 +496,10 @@ class SessionPool:
     ) -> LeaseInfo | None:
         """Reattach a parked seat for job_id if present; else claim a free worker of kind.
 
+        When reserved seats of kind are full and BURST_MAX > 0, spawn via WorkerFactory.
         Cloud seats: provision + worker bind after claim. Raises CloudPhoneProviderError
-        on provider/bind failure (seat returned to free).
+        on provider/bind failure (seat returned to free). Raises WorkerFactoryError on
+        burst spawn failure.
         """
         ttl = _clamp_ttl(ttl_sec if ttl_sec is not None else self._default_ttl)
         now = _utcnow()
@@ -474,7 +543,12 @@ class SessionPool:
                     break
 
         if info is None:
-            return None
+            return self._lease_burst(
+                kind=kind,
+                agent_id=agent_id,
+                job_id=job_id,
+                ttl=ttl,
+            )
 
         if cloud_reattach_seat:
             self._reconnect_cloud_adb(cloud_reattach_seat)
@@ -497,6 +571,66 @@ class SessionPool:
                 return self._lease_info(slot)
 
         return info
+
+    def _lease_burst(
+        self,
+        *,
+        kind: SeatKind,
+        agent_id: str | None,
+        job_id: str | None,
+        ttl: int,
+    ) -> LeaseInfo | None:
+        """Spawn an ephemeral seat when reserved inventory is exhausted."""
+        max_n = self.burst_max_for(kind)
+        if max_n <= 0:
+            return None
+
+        prefix = "phone-burst" if kind == "phone" else "desk-burst"
+        seat_id = f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+        with self._lock:
+            if self._burst_in_use_locked(kind) >= max_n:
+                return None
+            self._burst_inflight.add(seat_id)
+
+        try:
+            spawned = self._factory.spawn(kind, seat_id=seat_id)
+        except WorkerFactoryError:
+            with self._lock:
+                self._burst_inflight.discard(seat_id)
+            raise
+        except Exception as e:
+            with self._lock:
+                self._burst_inflight.discard(seat_id)
+            raise WorkerFactoryError(str(e), code="spawn_failed") from e
+
+        now = _utcnow()
+        sid = str(uuid.uuid4())
+        with self._lock:
+            self._burst_inflight.discard(seat_id)
+            slot = WorkerSlot(
+                base_url=spawned.control_url.rstrip("/"),
+                vnc_url=spawned.vnc_url,
+                inventory_vnc_url=spawned.vnc_url,
+                kind=spawned.kind,
+                seat_id=spawned.seat_id or seat_id,
+                state="leased",
+                session_id=sid,
+                agent_id=agent_id,
+                job_id=job_id,
+                expires_at=now + timedelta(seconds=ttl),
+                ephemeral=True,
+                factory_handle=spawned.handle,
+            )
+            self._slots.append(slot)
+            logger.info(
+                "burst leased seat=%s kind=%s handle=%s factory=%s",
+                slot.seat_id,
+                slot.kind,
+                slot.factory_handle,
+                self._factory.name,
+            )
+            return self._lease_info(slot)
 
     def acquire(
         self,
@@ -568,8 +702,12 @@ class SessionPool:
             )
 
     def recycle(self, session_id: str) -> str | None:
-        """leased|parked → free; teardown cloud session; return worker URL to reset."""
+        """leased|parked → free; teardown cloud / burst; return worker URL to reset.
+
+        Ephemeral (burst) seats are removed and factory-destroyed, not returned to free.
+        """
         teardown: dict[str, str] | None = None
+        destroy_handle: str | None = None
         with self._lock:
             self._park_expired_leases_locked(_utcnow())
             slot = self._find_locked(session_id)
@@ -577,9 +715,14 @@ class SessionPool:
                 return None
             url = slot.base_url
             teardown = self._cloud_teardown_payload_locked(slot)
-            self._clear_to_free_locked(slot)
+            if slot.ephemeral:
+                destroy_handle = slot.factory_handle
+                self._slots.remove(slot)
+            else:
+                self._clear_to_free_locked(slot)
         if teardown:
             self._teardown_cloud(teardown)
+        self._destroy_factory_handle(destroy_handle)
         return url
 
     def worker_for(self, session_id: str) -> WorkerSlot | None:

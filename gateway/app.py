@@ -20,6 +20,8 @@ from inventory import SeatKind, load_workers
 from pool import SessionPool
 from providers import registered_names
 from providers.base import CloudPhoneProviderError
+from workers import build_worker_factory
+from workers.base import WorkerFactoryError
 
 logger = logging.getLogger("computer.gateway")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -37,10 +39,12 @@ for _w in _WORKERS:
             f"inventory seat {_w.id!r} provider={_w.provider!r} is not registered; "
             f"known: {sorted(_registered) or '(none)'}"
         )
+_FACTORY = build_worker_factory()
 pool = SessionPool(
     _WORKERS,
     default_ttl_sec=DEFAULT_TTL,
     parked_ttl_sec=PARKED_TTL,
+    worker_factory=_FACTORY,
 )
 
 _security = HTTPBearer(auto_error=False)
@@ -63,10 +67,14 @@ async def lifespan(_app: FastAPI):
         logger.warning("COMPUTER_API_TOKEN unset — gateway auth is disabled (dev only)")
     inv = os.environ.get("WORKER_INVENTORY_PATH", "").strip() or "(legacy WORKER_URLS)"
     logger.info(
-        "gateway ready: %d workers, public_base=%s, inventory=%s",
+        "gateway ready: %d workers, public_base=%s, inventory=%s, "
+        "burst_backend=%s desktop_burst_max=%s phone_burst_max=%s",
         pool.worker_count,
         PUBLIC_BASE,
         inv,
+        _FACTORY.name,
+        pool.burst_max_for("desktop"),
+        pool.burst_max_for("phone"),
     )
     for w in _WORKERS:
         logger.info(
@@ -358,6 +366,18 @@ def create_session(
         if e.retry_after_seconds is not None:
             detail["retry_after_seconds"] = e.retry_after_seconds
         raise HTTPException(status_code=503, detail=detail) from e
+    except WorkerFactoryError as e:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "ok": False,
+                "error": str(e),
+                "kind": kind,
+                "code": e.code or "burst_failed",
+                "burst_max": pool.burst_max_for(kind),
+                "burst_in_use": pool.burst_count_for(kind),
+            },
+        ) from e
     if not info:
         raise HTTPException(
             status_code=503,
@@ -368,6 +388,8 @@ def create_session(
                 "free": pool.free_count(),
                 "free_for_kind": pool.free_count_for(kind),
                 "parked": pool.parked_count(),
+                "burst_max": pool.burst_max_for(kind),
+                "burst_in_use": pool.burst_count_for(kind),
             },
         )
     logger.info(

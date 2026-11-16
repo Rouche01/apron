@@ -33,7 +33,7 @@ SEAT_BURST_DESKTOP_IMAGE=computer-with-agent-worker:local
 GATEWAY_BURST_VNC_BASE=http://localhost:30080   # public HITL origin you route to Pods
 ```
 
-Pool wiring (claim reserved first → spawn Job when full) is the next implementation step. Factory + templates land first so burst stays off until `DESKTOP_BURST_MAX > 0` and pool calls `spawn`.
+Pool wiring is live: reserved seats are claimed first; when full and `DESKTOP_BURST_MAX > 0` with `SEAT_BURST_BACKEND=k3s`, the gateway spawns a Job and registers an ephemeral seat. Recycle / parked-idle destroys the Job.
 
 ## HITL (noVNC)
 

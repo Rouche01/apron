@@ -1,11 +1,11 @@
-"""k3s WorkerFactory — apply Job templates via kubectl (phase 1).
+"""k3s WorkerFactory — apply Job templates via kubectl.
 
 Requires:
   - k3s (or any kube API) reachable with KUBECONFIG
   - worker images available to the cluster (import or registry)
   - manifests under deploy/k3s/ (mounted or repo-relative)
 
-Full pool wiring (lease → spawn) lands in a follow-up; this module is the backend.
+Pool calls spawn when reserved seats of a kind are full and BURST_MAX > 0.
 """
 
 from __future__ import annotations
