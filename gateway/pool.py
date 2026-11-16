@@ -93,7 +93,8 @@ class WorkerSlot:
     provider_session_id: str | None = None  # live cloud session
     cloud_watch_url: str | None = None
     cloud_unlock: str | None = None
-    ephemeral: bool = False  # burst seat (not in reserved inventory)
+    ephemeral: bool = False  # lease-burst seat (destroyed on recycle)
+    warm_spawned: bool = False  # register-spawned reserved physical (kept until unregister)
     factory_handle: str | None = None  # WorkerFactory.destroy id
 
 
@@ -126,6 +127,7 @@ class SessionPool:
         worker_factory: WorkerFactory | None = None,
         desktop_burst_max: int | None = None,
         phone_burst_max: int | None = None,
+        phone_warm_spawn_max: int | None = None,
     ) -> None:
         if not workers:
             raise ValueError("at least one worker is required")
@@ -143,10 +145,16 @@ class SessionPool:
             if phone_burst_max is not None
             else _env_burst_max("PHONE_BURST_MAX")
         )
+        self._phone_warm_spawn_max = (
+            phone_warm_spawn_max
+            if phone_warm_spawn_max is not None
+            else _env_burst_max("PHONE_WARM_SPAWN_MAX")
+        )
         self._lock = threading.Lock()
         self._slots: list[WorkerSlot] = []
-        # seat_ids currently mid-spawn (count toward burst cap)
+        # seat_ids currently mid-spawn (count toward burst / warm caps)
         self._burst_inflight: set[str] = set()
+        self._warm_inflight: set[str] = set()
         for i, w in enumerate(workers):
             if isinstance(w, WorkerSpec):
                 self._slots.append(
@@ -382,6 +390,7 @@ class SessionPool:
                     "expires_at": slot.expires_at.isoformat() if slot.expires_at else None,
                     "parked_at": slot.parked_at.isoformat() if slot.parked_at else None,
                     "ephemeral": slot.ephemeral,
+                    "warm_spawned": slot.warm_spawned,
                 }
                 if slot.kind == "phone":
                     seat["bound_serial"] = slot.bound_serial
@@ -895,7 +904,7 @@ class SessionPool:
             return r.status_code, data
 
     def _pick_free_physical_seat_locked(self, *, prefer_unbound: bool = True) -> WorkerSlot | None:
-        """Choose a free physical phone seat for device registration (phase 1)."""
+        """Choose a free physical phone seat for device registration."""
         candidates = [
             s
             for s in self._slots
@@ -908,6 +917,87 @@ class SessionPool:
             return None
         return candidates[0] if candidates else None
 
+    def _warm_spawn_in_use_locked(self) -> int:
+        live = sum(1 for s in self._slots if s.warm_spawned)
+        return live + len(self._warm_inflight)
+
+    def _phone_hitl_vnc_base(self) -> str:
+        return (
+            os.environ.get("PHONE_HITL_URL", "").strip()
+            or "http://localhost:6083/watch.html"
+        )
+
+    def _spawn_warm_physical_seat(self) -> tuple[int, dict[str, Any] | str]:
+        """Spawn a reserved physical phone worker (not lease-burst ephemeral).
+
+        Returns (200, seat_id) or (status, error dict).
+        """
+        max_n = self._phone_warm_spawn_max
+        if max_n <= 0:
+            return 503, {
+                "ok": False,
+                "error": (
+                    "no free unbound physical phone seat "
+                    "(set PHONE_WARM_SPAWN_MAX>0 and SEAT_BURST_BACKEND to auto-spawn)"
+                ),
+                "code": "no_free_phone_seat",
+                "warm_spawn_max": max_n,
+            }
+
+        seat_id = f"phone-warm-{uuid.uuid4().hex[:8]}"
+        with self._lock:
+            if self._warm_spawn_in_use_locked() >= max_n:
+                return 503, {
+                    "ok": False,
+                    "error": "warm physical spawn cap reached",
+                    "code": "warm_spawn_cap",
+                    "warm_spawn_max": max_n,
+                    "warm_spawn_in_use": self._warm_spawn_in_use_locked(),
+                }
+            self._warm_inflight.add(seat_id)
+
+        try:
+            spawned = self._factory.spawn("phone", seat_id=seat_id)
+        except WorkerFactoryError as e:
+            with self._lock:
+                self._warm_inflight.discard(seat_id)
+            return 503, {
+                "ok": False,
+                "error": str(e),
+                "code": e.code or "spawn_failed",
+            }
+        except Exception as e:
+            with self._lock:
+                self._warm_inflight.discard(seat_id)
+            return 503, {
+                "ok": False,
+                "error": str(e),
+                "code": "spawn_failed",
+            }
+
+        hitl = self._phone_hitl_vnc_base()
+        with self._lock:
+            self._warm_inflight.discard(seat_id)
+            slot = WorkerSlot(
+                base_url=spawned.control_url.rstrip("/"),
+                vnc_url=hitl,
+                inventory_vnc_url=hitl,
+                kind="phone",
+                seat_id=spawned.seat_id or seat_id,
+                state="free",
+                ephemeral=False,
+                warm_spawned=True,
+                factory_handle=spawned.handle,
+            )
+            self._slots.append(slot)
+            logger.info(
+                "warm physical seat spawned seat=%s handle=%s factory=%s",
+                slot.seat_id,
+                slot.factory_handle,
+                self._factory.name,
+            )
+            return 200, slot.seat_id
+
     def register_physical_device(
         self,
         *,
@@ -918,8 +1008,9 @@ class SessionPool:
     ) -> tuple[int, dict[str, Any]]:
         """Ops: bind a newly registered physical phone onto a reserved seat.
 
-        Phase 1: requires an existing free physical seat (optional exact seat_id).
-        Auto-spawn when none are free is phase 2. Returns seat_id for pipeline pin.
+        Prefers a free unbound physical seat. If none and PHONE_WARM_SPAWN_MAX>0,
+        spawns a warm reserved worker (not lease-burst ephemeral) then binds.
+        Returns seat_id for pipeline pin. Warm seats survive recycle until unregister.
         """
         serial_s = (serial or "").strip() or None
         connect_s = (connect or "").strip() or None
@@ -933,6 +1024,7 @@ class SessionPool:
             }
 
         target_id: str | None = pin
+        spawned_warm = False
         with self._lock:
             self._park_expired_leases_locked(_utcnow())
             if pin:
@@ -954,13 +1046,17 @@ class SessionPool:
                 target_id = slot.seat_id
             else:
                 slot = self._pick_free_physical_seat_locked(prefer_unbound=True)
-                if not slot:
-                    return 503, {
-                        "ok": False,
-                        "error": "no free unbound physical phone seat",
-                        "code": "no_free_phone_seat",
-                    }
-                target_id = slot.seat_id
+                if slot:
+                    target_id = slot.seat_id
+
+        if target_id is None:
+            status, spawned = self._spawn_warm_physical_seat()
+            if status >= 400:
+                assert isinstance(spawned, dict)
+                return status, spawned
+            assert isinstance(spawned, str)
+            target_id = spawned
+            spawned_warm = True
 
         assert target_id is not None
         status, data = self.bind_phone_seat(
@@ -970,6 +1066,9 @@ class SessionPool:
             unlock=unlock_s,
         )
         if status >= 400:
+            if spawned_warm:
+                # Roll back empty warm seat so cap is not leaked.
+                self.unregister_physical_device(target_id, force=True)
             out = dict(data) if isinstance(data, dict) else {"ok": False, "detail": data}
             out.setdefault("ok", False)
             out.setdefault("code", "bind_failed")
@@ -981,9 +1080,79 @@ class SessionPool:
             "seat_id": target_id,
             "bound_serial": data.get("bound_serial") if isinstance(data, dict) else None,
             "vnc_url": data.get("vnc_url") if isinstance(data, dict) else None,
+            "warm_spawned": spawned_warm,
             "worker": data.get("worker") if isinstance(data, dict) else None,
             "scrcpy": data.get("scrcpy") if isinstance(data, dict) else None,
             "hint": data.get("hint") if isinstance(data, dict) else None,
+        }
+
+    def unregister_physical_device(
+        self,
+        seat_id: str,
+        *,
+        force: bool = False,
+    ) -> tuple[int, dict[str, Any]]:
+        """Remove a register-spawned warm physical seat (unbind + destroy worker).
+
+        Inventory Compose seats: use /v1/seats/{id}/unbind instead (not removed).
+        """
+        pin = (seat_id or "").strip()
+        if not pin:
+            return 400, {
+                "ok": False,
+                "error": "seat_id required",
+                "code": "missing_seat_id",
+            }
+
+        # Best-effort unbind first (skipped if already free of device).
+        unbind_status, unbind_data = self.unbind_phone_seat(pin)
+        if unbind_status == 409 and not force:
+            return 409, {
+                "ok": False,
+                "error": "seat is leased — release or recycle before unregister",
+                "code": "seat_busy",
+                "seat_id": pin,
+                "unbind": unbind_data,
+            }
+
+        destroy_handle: str | None = None
+        with self._lock:
+            slot = self._find_seat_locked(pin)
+            if not slot:
+                return 404, {
+                    "ok": False,
+                    "error": f"seat {pin!r} not found",
+                    "code": "seat_not_found",
+                    "seat_id": pin,
+                }
+            if not slot.warm_spawned:
+                return 400, {
+                    "ok": False,
+                    "error": (
+                        "seat is inventory-reserved — use POST /v1/seats/{id}/unbind; "
+                        "unregister only removes warm-spawned seats"
+                    ),
+                    "code": "not_warm_spawned",
+                    "seat_id": pin,
+                }
+            if slot.state == "leased" and not force:
+                return 409, {
+                    "ok": False,
+                    "error": "seat is leased — release or recycle before unregister",
+                    "code": "seat_busy",
+                    "seat_id": pin,
+                    "session_id": slot.session_id,
+                }
+            destroy_handle = slot.factory_handle
+            self._slots.remove(slot)
+
+        self._destroy_factory_handle(destroy_handle)
+        logger.info("warm physical seat unregistered seat=%s handle=%s", pin, destroy_handle)
+        return 200, {
+            "ok": True,
+            "seat_id": pin,
+            "destroyed": True,
+            "unbind_status": unbind_status,
         }
 
     def bind_phone_seat(

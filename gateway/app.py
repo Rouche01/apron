@@ -322,9 +322,9 @@ class DeviceRegisterBody(BaseModel):
 def devices_register(body: DeviceRegisterBody, _: AuthDep):
     """Bind a physical device to a free phone seat; return seat_id for lease pin.
 
-    Phase 1: does not spawn workers — needs an existing free unbound physical seat
-    (or pass seat_id to rebind that seat). Human Allow once on first ADB trust.
-    Pipeline then leases with {\"kind\":\"phone\",\"seat_id\":…}.
+    Prefers a free unbound physical seat. If none and PHONE_WARM_SPAWN_MAX>0 with a
+    WorkerFactory backend, spawns a warm reserved phone worker then binds.
+    Human Allow once on first ADB trust. Pipeline leases with seat_id pin.
     """
     if not (body.serial or "").strip() and not (body.connect or "").strip():
         raise HTTPException(
@@ -341,6 +341,22 @@ def devices_register(body: DeviceRegisterBody, _: AuthDep):
         unlock=(body.unlock or "").strip() or None,
         seat_id=(body.seat_id or "").strip() or None,
     )
+    if status >= 400:
+        raise HTTPException(status_code=status, detail=data)
+    return data
+
+
+class DeviceUnregisterBody(BaseModel):
+    seat_id: str = Field(description="Warm-spawned physical seat to destroy")
+
+
+@app.post("/v1/devices/unregister", tags=["ops"])
+def devices_unregister(body: DeviceUnregisterBody, _: AuthDep):
+    """Destroy a register-spawned warm physical seat (unbind + WorkerFactory.destroy).
+
+    Inventory Compose seats are not removed — use POST /v1/seats/{id}/unbind instead.
+    """
+    status, data = pool.unregister_physical_device((body.seat_id or "").strip())
     if status >= 400:
         raise HTTPException(status_code=status, detail=data)
     return data

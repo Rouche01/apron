@@ -100,10 +100,14 @@ class K3sWorkerFactory:
             raise WorkerFactoryError("kubectl timed out", code="kubectl_timeout") from e
 
     def _sanitize_job_name(self, seat_id: str, *, kind: SeatKind) -> str:
-        prefix = "phone-burst" if kind == "phone" else "desk-burst"
         job_name = seat_id.replace("_", "-").lower()
-        if not job_name.startswith(prefix):
-            job_name = f"{prefix}-{job_name}"
+        if kind == "phone":
+            allowed = ("phone-burst", "phone-warm")
+            if not any(job_name.startswith(p) for p in allowed):
+                job_name = f"phone-burst-{job_name}"
+        else:
+            if not job_name.startswith("desk-burst"):
+                job_name = f"desk-burst-{job_name}"
         job_name = "".join(c if c.isalnum() or c == "-" else "-" for c in job_name)[:63]
         return job_name
 

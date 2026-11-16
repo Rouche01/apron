@@ -83,7 +83,8 @@ Base: `/v1` · Auth: `Authorization: Bearer $COMPUTER_API_TOKEN` (optional if to
 | `GET` | `/v1/seats` | Per-worker inventory (`kind` + `free`/`leased`/`parked` + `session_id`/`vnc_url`/`job_id`) |
 | `GET` | `/v1/seats/{id}/devices` | Phone: adb devices visible to the seat |
 | `GET` | `/v1/seats/{id}/device` | Phone: current bind + selected device |
-| `POST` | `/v1/devices/register` | Phone (physical): pick free unbound seat (or `seat_id`) + bind; returns `seat_id` for lease pin — phase 1 no spawn |
+| `POST` | `/v1/devices/register` | Phone (physical): pick free unbound seat (or `seat_id`) + bind; if none and `PHONE_WARM_SPAWN_MAX>0`, spawn warm reserved worker; returns `seat_id` for lease pin |
+| `POST` | `/v1/devices/unregister` | Phone (physical): destroy a **warm-spawned** seat (unbind + factory destroy); inventory seats use `/unbind` only |
 | `POST` | `/v1/seats/{id}/bind` | Phone (physical): runtime bind (`serial` / `connect` / optional `unlock`) — refused while leased or on cloud seats |
 | `POST` | `/v1/seats/{id}/unbind` | Phone (physical): clear runtime bind — refused on cloud seats |
 | `GET` | `/health` · `/ready` | Ops aggregates |
@@ -138,6 +139,7 @@ Pool states: **free** → **leased** → **parked** (idle TTL) → free after re
 | `DESKTOP_BURST_MAX` / `PHONE_BURST_MAX` | Max ephemeral seats beyond reserved (default `0`) |
 | `PHONE_BURST_PROVIDER` | Cloud provider id for phone burst seats (default `phone-harness`) |
 | `SEAT_BURST_PHONE_IMAGE` | k3s phone worker image (default `computer-with-agent-phone:local`) |
+| `PHONE_WARM_SPAWN_MAX` | Max register-spawned reserved physical seats (default `0` = bind existing only) |
 | `KUBECONFIG` | kubeconfig for k3s burst (when backend is `k3s`) |
 
 **Per-environment inventory:** do not reuse one `vnc_url` across hosts. Point `.env` at the right file:
