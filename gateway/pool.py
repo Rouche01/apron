@@ -18,11 +18,12 @@ from typing import Any, Literal
 
 import httpx
 
+import burst_seats
 import cloud_phone_seats
 import physical_phone_seats
 from inventory import SeatKind, WorkerSpec
 from physical_phone_seats import vnc_url_with_udid
-from workers.base import WorkerFactory, WorkerFactoryError
+from workers.base import WorkerFactory
 from workers.disabled import DisabledWorkerFactory
 
 logger = logging.getLogger("computer.gateway.pool")
@@ -224,21 +225,10 @@ class SessionPool:
             return self._burst_in_use_locked(kind)
 
     def _burst_in_use_locked(self, kind: SeatKind) -> int:
-        live = sum(1 for s in self._slots if s.ephemeral and s.kind == kind)
-        inflight = sum(
-            1
-            for sid in self._burst_inflight
-            if sid.startswith("phone-burst-" if kind == "phone" else "desk-burst-")
-        )
-        return live + inflight
+        return burst_seats.burst_in_use(self._slots, self._burst_inflight, kind)
 
     def _destroy_factory_handle(self, handle: str | None) -> None:
-        if not handle:
-            return
-        try:
-            self._factory.destroy(handle)
-        except Exception as e:
-            logger.warning("burst destroy failed handle=%s: %s", handle, e)
+        burst_seats.destroy_factory_handle(self._factory, handle)
 
     def _cloud_teardown_payload_locked(self, slot: WorkerSlot) -> dict[str, str] | None:
         return cloud_phone_seats.teardown_payload(slot)
@@ -529,10 +519,7 @@ class SessionPool:
         return info
 
     def _phone_burst_provider(self) -> str:
-        return (
-            os.environ.get("PHONE_BURST_PROVIDER", "phone-harness").strip()
-            or "phone-harness"
-        )
+        return burst_seats.phone_burst_provider()
 
     def _lease_burst(
         self,
@@ -547,73 +534,9 @@ class SessionPool:
         Phone burst: spawn ADB worker Pod, then CloudPhoneProvider.provision + bind
         (same as reserved cloud seats). Watch URL comes from the provider.
         """
-        max_n = self.burst_max_for(kind)
-        if max_n <= 0:
-            return None
-
-        prefix = "phone-burst" if kind == "phone" else "desk-burst"
-        seat_id = f"{prefix}-{uuid.uuid4().hex[:8]}"
-        phone_provider = self._phone_burst_provider() if kind == "phone" else None
-
-        with self._lock:
-            if self._burst_in_use_locked(kind) >= max_n:
-                return None
-            self._burst_inflight.add(seat_id)
-
-        try:
-            spawned = self._factory.spawn(kind, seat_id=seat_id)
-        except WorkerFactoryError:
-            with self._lock:
-                self._burst_inflight.discard(seat_id)
-            raise
-        except Exception as e:
-            with self._lock:
-                self._burst_inflight.discard(seat_id)
-            raise WorkerFactoryError(str(e), code="spawn_failed") from e
-
-        now = _utcnow()
-        sid = str(uuid.uuid4())
-        with self._lock:
-            self._burst_inflight.discard(seat_id)
-            slot = WorkerSlot(
-                base_url=spawned.control_url.rstrip("/"),
-                vnc_url=spawned.vnc_url,
-                inventory_vnc_url=spawned.vnc_url,
-                kind=spawned.kind,
-                seat_id=spawned.seat_id or seat_id,
-                state="leased",
-                session_id=sid,
-                agent_id=agent_id,
-                job_id=job_id,
-                expires_at=now + timedelta(seconds=ttl),
-                ephemeral=True,
-                factory_handle=spawned.handle,
-                provider=phone_provider,
-            )
-            self._slots.append(slot)
-            logger.info(
-                "burst leased seat=%s kind=%s handle=%s factory=%s provider=%s",
-                slot.seat_id,
-                slot.kind,
-                slot.factory_handle,
-                self._factory.name,
-                phone_provider or "-",
-            )
-            info = self._lease_info(slot)
-
-        if phone_provider:
-            try:
-                self._provision_and_bind_cloud(seat_id, lease_ttl_sec=ttl)
-            except Exception:
-                self._abort_claimed_lease(seat_id)
-                raise
-            with self._lock:
-                slot = self._find_seat_locked(seat_id)
-                if not slot or slot.state != "leased":
-                    return None
-                return self._lease_info(slot)
-
-        return info
+        return burst_seats.lease_burst(
+            self, kind=kind, agent_id=agent_id, job_id=job_id, ttl=ttl
+        )
 
     def acquire(
         self,
