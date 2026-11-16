@@ -16,6 +16,8 @@ Sibling consumer: `~/Projects/relay-os` (`@relay/engines-computer`, CommunityEng
 | `Dockerfile.phone` + `phone/` | **Phone worker** — ADB screenshot/tap/swipe/key/launch, soft/hard reset `:8000` |
 | `Dockerfile.scrcpy` + `scrcpy-web/` | **Phone HITL** — Mel0nFish/ws-scrcpy-enhanced (scrcpy-server 3.3.4) on host `:6083` (profile `phone`; Android 16 OK) |
 | `Dockerfile.gateway` + `gateway/` | **Gateway** — lease/park/release, proxy, Bearer auth, OpenAPI `:9000` |
+| `gateway/pool.py` | **SessionPool** — lock + lease/park/recycle/sweep/proxy; thin facade over seat helpers |
+| `gateway/cloud_phone_seats.py` · `physical_phone_seats.py` · `burst_seats.py` | **Seat helpers** — cloud provision/teardown; physical register/bind/Watch; lease-burst spawn/destroy |
 | `gateway/providers/` | **Cloud phone providers** — `CloudPhoneProvider` registry; `phone-harness` first impl |
 | `gateway/workers/` | **Burst WorkerFactory** — disabled by default; k3s backend for on-demand seats |
 | `deploy/k3s/` | **k3s manifests** — namespace + desktop burst Job template |
