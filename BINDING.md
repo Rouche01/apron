@@ -2,6 +2,8 @@
 
 Inference stays **outside** this project. Your agent leases a seat, loops (screenshot → model → action), then soft-releases (or recycles when the job is done).
 
+Stable gateway paths, status codes, and compatibility freeze: **[docs/v1.md](docs/v1.md)**.
+
 Default display (desktop): **1280×800**. Gateway: `http://localhost:9000` (Compose).
 
 Seat **kind** (inventory JSON via `WORKER_INVENTORY_PATH`): `desktop` (default) or `phone`. Optional inventory `provider` (e.g. `phone-harness`) marks a cloud phone seat — same `kind: phone` lease for agents; gateway provisions ADB + `watch_url`. `POST /v1/sessions` body field `kind` selects the pool; omit it for desktop. Lease response includes `kind` and `seat_id`.

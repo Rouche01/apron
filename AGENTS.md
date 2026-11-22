@@ -70,6 +70,8 @@ curl -s -H "Authorization: Bearer $COMPUTER_API_TOKEN" \
 
 ## Agent-facing API (gateway)
 
+Public contract + freeze notes: [`docs/v1.md`](docs/v1.md).
+
 Base: `/v1` · Auth: `Authorization: Bearer $COMPUTER_API_TOKEN` (optional if token unset — dev only).
 
 | Method | Path | Notes |

@@ -52,7 +52,8 @@ Default inventory is two warm desktop seats (`gateway/workers.json`).
 ## Bind your agent
 
 Tool shapes and full curl / Python examples: **[BINDING.md](BINDING.md)**  
-OpenAI / Anthropic-style JSON: [`schemas/`](schemas/)
+OpenAI / Anthropic-style JSON: [`schemas/`](schemas/)  
+Public HTTP contract (auth, lease/park/recycle, **503**, freeze notes): **[docs/v1.md](docs/v1.md)**
 
 Loop: `POST /v1/sessions` → screenshot → model → `POST …/action` → `DELETE /v1/sessions/{id}`
 

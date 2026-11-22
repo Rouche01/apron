@@ -7,6 +7,7 @@ Thanks for interest in Computer Runtime. Inference stays **outside** this projec
 1. Read [README.md](README.md) (desktop golden path) and [AGENTS.md](AGENTS.md) (layout, seats, env).
 2. Prefer small, focused PRs. Match existing style; don’t expand scope into LLM loops or auto-CAPTCHA.
 3. New product features should attach at gateway edges (e.g. recording, auth) — avoid bloating `gateway/pool.py` (see seat helpers: `cloud_phone_seats`, `physical_phone_seats`, `burst_seats`).
+4. Do not put LLM calls in the gateway or workers. Breaking changes to guaranteed `/v1` behavior need a new API prefix or an update to [docs/v1.md](docs/v1.md).
 
 ## Dev loop
 
