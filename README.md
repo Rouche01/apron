@@ -66,3 +66,11 @@ Not required for the desktop golden path:
 | **k3s burst** | On-demand seats when reserved inventory is full | [`deploy/k3s/README.md`](deploy/k3s/README.md) |
 
 Phone without `seat_id` leases **cloud** seats only; pin a physical device with `"seat_id"` after register/bind.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).
+
+## License
+
+[Apache License 2.0](LICENSE)
