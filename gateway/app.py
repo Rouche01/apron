@@ -87,6 +87,13 @@ async def lifespan(_app: FastAPI):
             len(tenants.tenant_ids()),
             "set" if API_TOKEN else "unset",
         )
+        _pb = PUBLIC_BASE.lower()
+        if "localhost" in _pb or "127.0.0.1" in _pb:
+            logger.warning(
+                "TENANTS_PATH set but GATEWAY_PUBLIC_BASE=%s looks local — "
+                "hosted customers need a public HTTPS origin (see docs/hosted.md)",
+                PUBLIC_BASE,
+            )
     elif not API_TOKEN:
         logger.warning("COMPUTER_API_TOKEN unset — gateway auth is disabled (dev only)")
     inv = os.environ.get("WORKER_INVENTORY_PATH", "").strip() or "(legacy WORKER_URLS)"

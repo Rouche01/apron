@@ -1,0 +1,15 @@
+# Example Caddyfile for hosted desktop seats (gateway + noVNC).
+# Replace example.com hostnames; bind Compose ports to 127.0.0.1 on the host.
+# Phone Watch (cu-phone / :6083) is intentionally omitted from this desktop-first template.
+
+api.example.com {
+	reverse_proxy 127.0.0.1:9000
+}
+
+desk1.example.com {
+	reverse_proxy 127.0.0.1:6081
+}
+
+desk2.example.com {
+	reverse_proxy 127.0.0.1:6082
+}

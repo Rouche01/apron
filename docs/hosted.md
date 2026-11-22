@@ -1,8 +1,10 @@
-# Hosted tenancy (soft seat isolation)
+# Hosted mode (tenancy + public URLs)
 
 Invite-only / multi-customer mode on **one** gateway process. Each customer API key may only claim and see seats in its allowlist. OSS single-token mode is unchanged when `TENANTS_PATH` is unset.
 
 Hard isolation (separate Compose stacks per customer) remains an ops escape hatch — not required for this MVP.
+
+Also covered here: **public `GATEWAY_PUBLIC_BASE` + desktop Watch URLs** behind LB/Caddy (phone Watch later).
 
 ## Enable
 
@@ -68,10 +70,63 @@ When a customer needs a variable number of leased computers:
 
 Until those land, treat `seat_ids` as **reserved capacity** you sell/assign, not an autoscaler.
 
+## Public URLs (desktop first)
+
+Agents and browsers must reach the **same** origins you bake into lease responses:
+
+| Surface | Env / inventory | Example |
+|---------|-----------------|--------|
+| API (`api_base`) | `GATEWAY_PUBLIC_BASE` | `https://api.example.com` |
+| Desktop Watch (`vnc_url`) | inventory `vnc_url` per seat | `https://desk1.example.com/vnc.html?…` |
+
+Worker **control** URLs (`url`: `http://worker-1:8000`) stay on the Compose network — never publish worker `:8000` on the public face.
+
+### Checklist
+
+1. Copy [`gateway/workers.hosted.example.json`](../gateway/workers.hosted.example.json) → e.g. `gateway/workers.hosted.json`; replace `example.com` with your DNS names (desktop seats only in this template).
+2. Set:
+
+```bash
+GATEWAY_PUBLIC_BASE=https://api.example.com
+WORKER_INVENTORY_FILE=./gateway/workers.hosted.json
+```
+
+3. On the host, bind Compose published ports to **loopback** so only the reverse proxy is reachable:
+
+```yaml
+ports:
+  - "127.0.0.1:9000:9000"
+  - "127.0.0.1:6081:6080"
+  - "127.0.0.1:6082:6080"
+```
+
+(Prefer a local `docker-compose.override.yml` — do not commit ThinkPad-only binds into the shared compose file.)
+
+4. Terminate TLS at Caddy (or LB) with Host routes → those loopback ports. Starter file: [`deploy/hosted-caddy.example.caddyfile`](../deploy/hosted-caddy.example.caddyfile).
+
+5. Smoke from a laptop (not the host):
+
+```bash
+export GW=https://api.example.com
+export AUTH="Authorization: Bearer <tenant-or-ops-token>"
+curl -s -H "$AUTH" "$GW/health"
+# Lease → confirm api_base and vnc_url are https://…example.com (not localhost)
+# Open vnc_url in a browser; Watch should connect over WSS via Caddy
+```
+
+Gateway already injects `autoconnect=1&resize=scale` (and `port=443` on HTTPS noVNC URLs when needed).
+
+### Phone Watch
+
+Physical scrcpy (`:6083`) / cloud vendor `watch_url` follow the same pattern (public hostname → loopback) but are **out of this desktop-first pack**. See [AGENTS.md](../AGENTS.md) ThinkPad / Caddy notes when you add them.
+
+### Localhost warning
+
+If `TENANTS_PATH` is set and `GATEWAY_PUBLIC_BASE` still looks like `localhost` / `127.0.0.1`, the gateway logs a **warning** at boot — fine for dogfood, wrong for real customers.
+
 ## Not in this MVP
 
 - Concurrent lease / seat-time caps and shared-pool elasticity (`hosted-metering`)
-- Public LB URL packaging (`hosted-public-urls`)
 - Object-storage recordings / Stripe key provisioning
 
 See [docs/v1.md](v1.md) for the shared `/v1` contract.

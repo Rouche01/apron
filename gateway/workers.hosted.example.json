@@ -1,0 +1,14 @@
+[
+  {
+    "id": "desk1",
+    "kind": "desktop",
+    "url": "http://worker-1:8000",
+    "vnc_url": "https://desk1.example.com/vnc.html?autoconnect=1&resize=scale&path=&port=443"
+  },
+  {
+    "id": "desk2",
+    "kind": "desktop",
+    "url": "http://worker-2:8000",
+    "vnc_url": "https://desk2.example.com/vnc.html?autoconnect=1&resize=scale&path=&port=443"
+  }
+]
