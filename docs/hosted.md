@@ -127,9 +127,43 @@ Physical scrcpy (`:6083`) / cloud vendor `watch_url` follow the same pattern (pu
 
 If `TENANTS_PATH` is set and `GATEWAY_PUBLIC_BASE` still looks like `localhost` / `127.0.0.1`, the gateway logs a **warning** at boot — fine for dogfood, wrong for real customers.
 
+## Hosted recordings (object storage)
+
+Same `/v1/recordings` API as OSS. Storage backend is selectable:
+
+| Env | Meaning |
+|-----|---------|
+| `RECORDING_BACKEND` | `local` (default) or `s3` (S3/R2/MinIO) |
+| `RECORDING_DIR` | Local root when `local` |
+| `RECORDING_S3_BUCKET` | Bucket name (required for `s3`) |
+| `RECORDING_S3_PREFIX` | Key prefix (default `recordings`) |
+| `RECORDING_S3_ENDPOINT` | Optional (R2/MinIO endpoint URL) |
+| `RECORDING_S3_REGION` | Optional region |
+| `RECORDING_S3_ACCESS_KEY` / `RECORDING_S3_SECRET_KEY` | Credentials (or ambient IAM) |
+
+Object key layout (per-tenant prefix):
+
+```text
+{prefix}/t/{tenant_id}/…/meta.json
+{prefix}/t/{tenant_id}/…/events.jsonl
+{prefix}/t/{tenant_id}/…/frames/000001.png
+{prefix}/_sessions/{session_id}.json   # lookup index
+```
+
+Anonymous / OSS sessions use tenant segment `anon`.
+
+### Quota
+
+Optional tenant field `max_recording_bytes`. When set:
+
+- `start` refuses new journals over quota (lease still succeeds; `recording: false`)
+- frame appends over quota are omitted with event note `frame_omitted_quota`
+
+TTL remains `RECORDING_TTL_SEC` (default 7d) via the existing sweeper.
+
 ## Not in this MVP
 
 - Shared-pool / burst elasticity beyond the seat allowlist  
-- Object-storage recordings / Stripe key provisioning  
+- Stripe key provisioning  
 
 See [docs/v1.md](v1.md) for the shared `/v1` contract.

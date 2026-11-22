@@ -6,7 +6,9 @@ import base64
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from recording import RecordingStore
+import pytest
+
+from recording import RecordingQuotaExceeded, RecordingStore
 
 
 def _store(tmp: Path) -> RecordingStore:
@@ -82,19 +84,34 @@ def test_finalize_and_sweep(tmp_path: Path):
     meta = store.finalize("old")
     assert meta is not None
     assert meta["ended_at"]
-    # Force expiry in the past
-    session_dir = tmp_path / "old"
-    m = store._read_meta(session_dir)
+    # Force expiry in the past via blob meta
+    prefix = store._resolve_prefix("old")
+    assert prefix
+    m = store._read_meta_at(prefix)
     assert m is not None
     past = datetime.now(timezone.utc) - timedelta(hours=1)
     m["expires_at"] = past.isoformat().replace("+00:00", "Z")
-    store._write_meta(session_dir, m)
+    store._write_meta_at(prefix, m)
 
     store.start("new", kind="desktop")
     deleted = store.sweep()
     assert "old" in deleted
-    assert not (tmp_path / "old").exists()
-    assert (tmp_path / "new" / "meta.json").is_file()
+    assert store.get("old") is None
+    assert store.get("new") is not None
+
+
+def test_tenant_prefix_and_quota(tmp_path: Path):
+    store = RecordingStore(
+        tmp_path, ttl_sec=3600, max_frame_bytes=1000, quota_bytes_by_tenant={"acme": 50}
+    )
+    store.start("s1", kind="desktop", tenant_id="acme")
+    assert store.belongs_to_tenant("s1", "acme")
+    # Tiny frame under quota
+    store.append("s1", kind="screenshot", frame_png=b"\x89PNG" + b"x" * 10)
+    # Fill quota then start another session should raise
+    store.append("s1", kind="screenshot", frame_png=b"z" * 40)
+    with pytest.raises(RecordingQuotaExceeded):
+        store.start("s2", kind="desktop", tenant_id="acme")
 
 
 def test_start_idempotent(tmp_path: Path):

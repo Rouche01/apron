@@ -6,7 +6,8 @@
       "api_keys": ["cwa_test_acme_replace_me"],
       "seat_ids": ["desk1"],
       "max_concurrent_leases": 1,
-      "max_lease_ttl_sec": 3600
+      "max_lease_ttl_sec": 3600,
+      "max_recording_bytes": 524288000
     },
     {
       "id": "beta",

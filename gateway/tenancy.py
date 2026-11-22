@@ -23,6 +23,7 @@ class Tenant:
     seat_ids: frozenset[str]
     max_concurrent_leases: int  # leased+parked held by this tenant
     max_lease_ttl_sec: int | None  # clamp request TTL; None = no extra clamp
+    max_recording_bytes: int | None  # recording storage quota; None = unlimited
 
 
 @dataclass(frozen=True)
@@ -128,6 +129,21 @@ class TenantRegistry:
                     raise ValueError(
                         f"tenants[{i}].max_lease_ttl_sec must be >= 30"
                     )
+            max_rec_raw = row.get("max_recording_bytes")
+            max_rec: int | None
+            if max_rec_raw is None or max_rec_raw == "":
+                max_rec = None
+            else:
+                try:
+                    max_rec = int(max_rec_raw)
+                except (TypeError, ValueError) as e:
+                    raise ValueError(
+                        f"tenants[{i}].max_recording_bytes must be an int"
+                    ) from e
+                if max_rec < 1:
+                    raise ValueError(
+                        f"tenants[{i}].max_recording_bytes must be >= 1"
+                    )
             tenants.append(
                 Tenant(
                     id=tid,
@@ -135,6 +151,7 @@ class TenantRegistry:
                     seat_ids=seats,
                     max_concurrent_leases=concurrent,
                     max_lease_ttl_sec=max_ttl,
+                    max_recording_bytes=max_rec,
                 )
             )
         if not tenants:
@@ -161,6 +178,9 @@ class TenantRegistry:
 
     def tenant_ids(self) -> list[str]:
         return [t.id for t in self._tenants]
+
+    def iter_tenants(self) -> list[Tenant]:
+        return list(self._tenants)
 
 
 def load_registry_from_env() -> TenantRegistry | None:

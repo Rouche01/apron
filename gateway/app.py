@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
@@ -21,7 +21,7 @@ from inventory import SeatKind, load_workers
 from pool import SeatPinError, SessionPool
 from providers import registered_names
 from providers.base import CloudPhoneProviderError
-from recording import RecordingStore, resolve_record_flag
+from recording import RecordingQuotaExceeded, RecordingStore, resolve_record_flag
 from tenancy import (
     TenantContext,
     filter_seats,
@@ -60,6 +60,10 @@ try:
     tenants = load_registry_from_env()
 except (OSError, ValueError, json.JSONDecodeError) as e:
     raise RuntimeError(f"invalid TENANTS_PATH: {e}") from e
+if tenants is not None:
+    for _t in tenants.iter_tenants():
+        if _t.max_recording_bytes:
+            recordings.set_quota_bytes(_t.id, _t.max_recording_bytes)
 
 _security = HTTPBearer(auto_error=False)
 
@@ -272,6 +276,16 @@ def _start_recording_for_lease(
             job_id=info.job_id,
             tenant_id=tenant_id,
         )
+    except RecordingQuotaExceeded as e:
+        logger.warning(
+            "recording quota session=%s tenant=%s used=%s limit=%s",
+            info.session_id,
+            tenant_id,
+            e.used,
+            e.limit,
+        )
+        pool.set_recording(info.session_id, False)
+        return False
     except ValueError as e:
         logger.warning("recording start failed session=%s: %s", info.session_id, e)
         pool.set_recording(info.session_id, False)
@@ -825,7 +839,7 @@ def get_recording_frame(session_id: str, name: str, ctx: TenantDep):
     """Serve a captured PNG frame from a recording journal."""
     if not ctx.is_ops and not recordings.belongs_to_tenant(session_id, ctx.id or ""):
         raise HTTPException(status_code=404, detail="frame not found")
-    path = recordings.frame_path(session_id, name)
-    if path is None:
+    data = recordings.get_frame(session_id, name)
+    if data is None:
         raise HTTPException(status_code=404, detail="frame not found")
-    return FileResponse(path, media_type="image/png", filename=path.name)
+    return Response(content=data, media_type="image/png")

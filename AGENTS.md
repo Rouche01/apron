@@ -156,6 +156,8 @@ Plans: [`.cursor/plans/elastic_seats.plan.md`](.cursor/plans/elastic_seats.plan.
 | `RECORDING_TTL_SEC` | Delete journals after this (default 7d); **not** the same as park TTL |
 | `RECORD_SESSIONS_DEFAULT` | `1` → every lease records unless `record: false` |
 | `RECORDING_MAX_FRAME_BYTES` | Skip oversized frames (event note only) |
+| `RECORDING_BACKEND` | `local` (default) or `s3` (R2/S3) — [docs/hosted.md](docs/hosted.md) |
+| `RECORDING_S3_*` | Bucket / prefix / endpoint / keys when backend is `s3` |
 | `TENANTS_PATH` | Optional tenants JSON (hosted soft isolation); unset = OSS single-token — [docs/hosted.md](docs/hosted.md) |
 | `SEAT_BURST_BACKEND` | `disabled` (default) or `k3s` — on-demand worker factory |
 | `DESKTOP_BURST_MAX` / `PHONE_BURST_MAX` | Max ephemeral seats beyond reserved (default `0`) |
