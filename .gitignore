@@ -3,5 +3,13 @@
 **/.venv/
 *.pyc
 .env
+.env.*
+!.env.example
+!**/.env.example
 .data/
 **/.pytest_recordings*/
+*.pem
+*.key
+kubeconfig
+*.kubeconfig
+.DS_Store

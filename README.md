@@ -81,7 +81,8 @@ After `docker compose up --build -d`:
 ./scripts/oss-smoke.sh
 ```
 
-Release gate (clone → lease → act → recycle → recordings + CI): [docs/oss-smoke.md](docs/oss-smoke.md).
+Release gate (clone → lease → act → recycle → recordings + CI): [docs/oss-smoke.md](docs/oss-smoke.md).  
+Public launch hygiene (secrets, tag): [docs/oss-launch.md](docs/oss-launch.md) · [CHANGELOG.md](CHANGELOG.md).
 
 ## Contributing
 

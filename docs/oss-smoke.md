@@ -47,7 +47,7 @@ Use this when tagging an OSS launch (or after large gateway changes).
 
 | Step | Expect |
 |------|--------|
-| Clean clone / checkout; no secrets in tree (see `github-public`) | `.env` not committed; `.env.example` has placeholders only |
+| Clean clone / checkout; no secrets in tree ([oss-launch.md](oss-launch.md)) | `.env` not committed; `.env.example` has placeholders only |
 | `cp -n .env.example .env` | Token defaults to `dev-token` |
 | `docker compose up --build -d` | Gateway healthy; seats `desk1` / `desk2` free |
 | `curl …/health` | `ok` / workers present |
@@ -61,6 +61,7 @@ Use this when tagging an OSS launch (or after large gateway changes).
 
 ## See also
 
+- [oss-launch.md](oss-launch.md) — secrets scrub, tag, make repo public  
 - [README.md](../README.md) — quick start  
 - [BINDING.md](../BINDING.md) — bind loop + recording curl  
 - [docs/v1.md](v1.md) — public contract  
