@@ -84,6 +84,7 @@ class WorkerSlot:
     ephemeral: bool = False  # lease-burst seat (destroyed on recycle)
     warm_spawned: bool = False  # register-spawned reserved physical (kept until unregister)
     factory_handle: str | None = None  # WorkerFactory.destroy id
+    recording: bool = False  # opt-in journal capture (gateway RecordingStore)
 
 
 @dataclass
@@ -96,6 +97,7 @@ class LeaseInfo:
     seat_id: str = ""
     agent_id: str | None = None
     job_id: str | None = None
+    recording: bool = False
 
 
 @dataclass
@@ -140,6 +142,7 @@ class SessionPool:
         )
         self._lock = threading.Lock()
         self._slots: list[WorkerSlot] = []
+        self._pending_recording_finalize: list[str] = []
         # seat_ids currently mid-spawn (count toward burst / warm caps)
         self._burst_inflight: set[str] = set()
         self._warm_inflight: set[str] = set()
@@ -198,7 +201,34 @@ class SessionPool:
             seat_id=slot.seat_id,
             agent_id=slot.agent_id,
             job_id=slot.job_id,
+            recording=bool(slot.recording),
         )
+
+    def set_recording(self, session_id: str, value: bool) -> bool:
+        """Toggle journal capture for a leased or parked session. Returns False if missing."""
+        with self._lock:
+            slot = self._find_locked(session_id)
+            if not slot or slot.state == "free":
+                return False
+            slot.recording = bool(value)
+            return True
+
+    def is_recording(self, session_id: str) -> bool:
+        with self._lock:
+            slot = self._find_locked(session_id)
+            return bool(slot and slot.state == "leased" and slot.recording)
+
+    def drain_recording_finalizes(self) -> list[str]:
+        """Session ids parked/freed while recording; caller should RecordingStore.finalize."""
+        with self._lock:
+            out = list(dict.fromkeys(self._pending_recording_finalize))
+            self._pending_recording_finalize.clear()
+            return out
+
+    def _queue_recording_finalize_locked(self, slot: WorkerSlot) -> None:
+        if slot.recording and slot.session_id:
+            self._pending_recording_finalize.append(slot.session_id)
+            slot.recording = False
 
     def worker_urls(self) -> list[str]:
         return [s.base_url for s in self._slots]
@@ -243,12 +273,14 @@ class SessionPool:
         return cloud_phone_seats.teardown_payload(slot)
 
     def _clear_to_free_locked(self, slot: WorkerSlot) -> None:
+        self._queue_recording_finalize_locked(slot)
         slot.state = "free"
         slot.session_id = None
         slot.agent_id = None
         slot.job_id = None
         slot.expires_at = None
         slot.parked_at = None
+        slot.recording = False
         # Drop live cloud session fields; inventory provider name stays.
         slot.provider_session_id = None
         slot.cloud_watch_url = None
@@ -258,6 +290,7 @@ class SessionPool:
             slot.vnc_url = slot.inventory_vnc_url
 
     def _park_locked(self, slot: WorkerSlot, now: datetime) -> None:
+        self._queue_recording_finalize_locked(slot)
         slot.state = "parked"
         slot.expires_at = None
         slot.parked_at = now
@@ -616,6 +649,7 @@ class SessionPool:
                 seat_id=slot.seat_id,
                 agent_id=slot.agent_id,
                 job_id=slot.job_id,
+                recording=False,
             )
 
     def recycle(self, session_id: str) -> str | None:

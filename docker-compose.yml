@@ -208,11 +208,17 @@ services:
       PHONE_HARNESS_API_BASE: ${PHONE_HARNESS_API_BASE:-https://api.phone-harness.com}
       PHONE_HARNESS_TIMEOUT_SEC: ${PHONE_HARNESS_TIMEOUT_SEC:-}
       PHONE_HARNESS_PROFILE_ID: ${PHONE_HARNESS_PROFILE_ID:-}
+      # Opt-in session recording journals (not video). Lease body record:true or default below.
+      RECORDING_DIR: ${RECORDING_DIR:-/data/recordings}
+      RECORDING_TTL_SEC: ${RECORDING_TTL_SEC:-604800}
+      RECORD_SESSIONS_DEFAULT: ${RECORD_SESSIONS_DEFAULT:-0}
+      RECORDING_MAX_FRAME_BYTES: ${RECORDING_MAX_FRAME_BYTES:-2000000}
     volumes:
       # Host file must exist (missing path → Docker mounts an empty dir → gateway exits).
       # Physical phone: WORKER_INVENTORY_FILE=./gateway/workers.with-phone.json
       # Cloud / both: WORKER_INVENTORY_FILE=./gateway/workers.with-phone-cloud.json
       - ${WORKER_INVENTORY_FILE:-./gateway/workers.json}:/etc/computer/workers.json:ro
+      - gateway_recordings:/data/recordings
     depends_on:
       worker-1:
         condition: service_healthy
@@ -231,6 +237,9 @@ services:
       retries: 6
       start_period: 10s
     restart: unless-stopped
+
+volumes:
+  gateway_recordings:
 
 networks:
   computer_internal:

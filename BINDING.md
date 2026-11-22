@@ -70,6 +70,28 @@ curl -s -H "$AUTH" -X DELETE "$GW/v1/sessions/$SID"
 # → { "ok": true, "session_id": "...", "parked": true }
 ```
 
+### Session recording (optional journal)
+
+Not video — screenshot / observe / action events + PNG frames on the gateway volume. Survives park/recycle; expires via `RECORDING_TTL_SEC` (default 7d), **not** `PARKED_TTL_SEC`.
+
+```bash
+# Lease with recording on (or set RECORD_SESSIONS_DEFAULT=1)
+SESSION=$(curl -s -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"agent_id":"demo","job_id":"demo-job","record":true}' \
+  "$GW/v1/sessions")
+SID=$(echo "$SESSION" | jq -r .session_id)
+echo "$SESSION" | jq -r .recording   # true
+
+curl -s -H "$AUTH" "$GW/v1/sessions/$SID/screenshot" >/dev/null
+curl -s -H "$AUTH" -X DELETE "$GW/v1/sessions/$SID"
+
+# Past sessions (after park/recycle)
+curl -s -H "$AUTH" "$GW/v1/recordings?job_id=demo-job" | jq .
+curl -s -H "$AUTH" "$GW/v1/recordings/$SID" | jq '.meta, (.events|length)'
+# Frame file (name from events[].frame, e.g. 000001.png):
+# curl -s -H "$AUTH" -o frame.png "$GW/v1/recordings/$SID/frames/000001.png"
+```
+
 When the pool has no **free** workers of the requested `kind` (parked seats do not count as free), `POST /v1/sessions` returns **503** — retry, acquire an existing park, or wait for recycle / parked TTL.
 
 ## 3. Serial leases (same job)

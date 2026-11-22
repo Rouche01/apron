@@ -26,6 +26,23 @@ DEFAULT_TTL_SEC = 604800  # 7 days
 DEFAULT_MAX_FRAME_BYTES = 2_000_000
 
 
+def record_sessions_default() -> bool:
+    """Env RECORD_SESSIONS_DEFAULT — every lease records unless body record=false."""
+    return os.environ.get("RECORD_SESSIONS_DEFAULT", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def resolve_record_flag(record: bool | None) -> bool:
+    """Lease body record wins; otherwise RECORD_SESSIONS_DEFAULT."""
+    if record is not None:
+        return bool(record)
+    return record_sessions_default()
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -62,7 +79,10 @@ class RecordingStore:
         max_frame_bytes: int | None = None,
     ) -> None:
         env_root = os.environ.get("RECORDING_DIR", "").strip()
-        self.root = Path(root if root is not None else (env_root or "/data/recordings"))
+        preferred = Path(
+            root if root is not None else (env_root or "/data/recordings")
+        )
+        self.root = preferred
         try:
             self.ttl_sec = max(
                 60,
@@ -88,7 +108,18 @@ class RecordingStore:
         except ValueError:
             self.max_frame_bytes = DEFAULT_MAX_FRAME_BYTES
         self._lock = threading.Lock()
-        self.root.mkdir(parents=True, exist_ok=True)
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # Local/dev without Compose volume: keep journals under cwd.
+            fallback = Path.cwd() / ".data" / "recordings"
+            logger.warning(
+                "RECORDING_DIR %s not writable; using %s",
+                self.root,
+                fallback,
+            )
+            self.root = fallback
+            self.root.mkdir(parents=True, exist_ok=True)
 
     def _session_dir(self, session_id: str) -> Path:
         sid = (session_id or "").strip()

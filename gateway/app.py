@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
@@ -20,6 +20,7 @@ from inventory import SeatKind, load_workers
 from pool import SeatPinError, SessionPool
 from providers import registered_names
 from providers.base import CloudPhoneProviderError
+from recording import RecordingStore, resolve_record_flag
 from workers import build_worker_factory
 from workers.base import WorkerFactoryError
 
@@ -46,6 +47,7 @@ pool = SessionPool(
     parked_ttl_sec=PARKED_TTL,
     worker_factory=_FACTORY,
 )
+recordings = RecordingStore()
 
 _security = HTTPBearer(auto_error=False)
 
@@ -56,6 +58,10 @@ def _reaper_loop(stop: threading.Event) -> None:
         for worker_url in pool.sweep_expired():
             logger.info("parked idle TTL; recycling worker %s", worker_url)
             pool.reset_worker(worker_url)
+        for sid in pool.drain_recording_finalizes():
+            recordings.finalize(sid)
+        for sid in recordings.sweep():
+            logger.info("recording TTL swept session=%s", sid)
 
 
 @asynccontextmanager
@@ -128,6 +134,13 @@ class LeaseRequest(BaseModel):
             "without it, kind=phone claims cloud seats only."
         ),
     )
+    record: bool | None = Field(
+        default=None,
+        description=(
+            "Opt-in session recording journal (screenshots/actions). "
+            "When omitted, uses RECORD_SESSIONS_DEFAULT."
+        ),
+    )
 
 
 class LeaseResponse(BaseModel):
@@ -139,6 +152,7 @@ class LeaseResponse(BaseModel):
     seat_id: str | None = None
     agent_id: str | None = None
     job_id: str | None = None
+    recording: bool = False
 
 
 class HeartbeatRequest(BaseModel):
@@ -181,7 +195,34 @@ def _lease_response(info) -> LeaseResponse:
         seat_id=info.seat_id or None,
         agent_id=info.agent_id,
         job_id=info.job_id,
+        recording=bool(getattr(info, "recording", False)),
     )
+
+
+def _start_recording_for_lease(info, *, record: bool | None) -> bool:
+    """Create journal + set slot flag when record resolves true. Returns recording on."""
+    if not resolve_record_flag(record):
+        pool.set_recording(info.session_id, False)
+        return False
+    try:
+        recordings.start(
+            info.session_id,
+            kind=info.kind,
+            seat_id=info.seat_id or None,
+            agent_id=info.agent_id,
+            job_id=info.job_id,
+        )
+    except ValueError as e:
+        logger.warning("recording start failed session=%s: %s", info.session_id, e)
+        pool.set_recording(info.session_id, False)
+        return False
+    pool.set_recording(info.session_id, True)
+    return True
+
+
+def _finalize_recording(session_id: str) -> None:
+    pool.set_recording(session_id, False)
+    recordings.finalize(session_id)
 
 
 @app.middleware("http")
@@ -486,14 +527,17 @@ def create_session(
                 "burst_in_use": pool.burst_count_for(kind),
             },
         )
+    recording = _start_recording_for_lease(info, record=body.record)
+    info.recording = recording
     logger.info(
-        "leased session=%s kind=%s seat=%s agent=%s job=%s worker=%s",
+        "leased session=%s kind=%s seat=%s agent=%s job=%s worker=%s recording=%s",
         info.session_id,
         info.kind,
         info.seat_id,
         info.agent_id,
         info.job_id,
         info.worker_base_url,
+        recording,
     )
     return _lease_response(info)
 
@@ -543,6 +587,7 @@ def delete_session(
     info = pool.release(session_id)
     if not info:
         raise HTTPException(status_code=404, detail="session not found or expired")
+    _finalize_recording(session_id)
     # Phone: soft force-stop on park (keep app data). Desktop park stays warm (no reset).
     if info.kind == "phone":
         pool.reset_worker(info.worker_base_url, hard=False)
@@ -556,6 +601,7 @@ def delete_session(
 
 
 def _recycle_session(session_id: str) -> dict:
+    _finalize_recording(session_id)
     worker_url = pool.recycle(session_id)
     if not worker_url:
         raise HTTPException(status_code=404, detail="session not found or expired")
@@ -575,6 +621,11 @@ def screenshot(session_id: str, _: AuthDep):
     status, data = pool.proxy_get(session_id, "/screenshot")
     if status >= 400:
         raise HTTPException(status_code=status, detail=data)
+    if pool.is_recording(session_id):
+        frame_b64 = data.get("image") if isinstance(data, dict) else None
+        recordings.append(
+            session_id, kind="screenshot", ok=True, frame_b64=frame_b64
+        )
     return data
 
 
@@ -590,16 +641,32 @@ def observe(
     )
     if status >= 400:
         raise HTTPException(status_code=status, detail=data)
+    if pool.is_recording(session_id):
+        elements_n = None
+        frame_b64 = None
+        if isinstance(data, dict):
+            frame_b64 = data.get("image")
+            els = data.get("elements")
+            if isinstance(els, list):
+                elements_n = len(els)
+        recordings.append(
+            session_id,
+            kind="observe",
+            ok=True,
+            frame_b64=frame_b64,
+            elements_n=elements_n,
+        )
     return data
 
 
 @app.post("/v1/sessions/{session_id}/action", tags=["act"])
 def action(session_id: str, body: ActionBody, _: AuthDep):
-    status, data = pool.proxy_post(
-        session_id, "/action", body.model_dump(exclude_none=True)
-    )
+    payload = body.model_dump(exclude_none=True)
+    status, data = pool.proxy_post(session_id, "/action", payload)
     if status >= 400:
         raise HTTPException(status_code=status, detail=data)
+    if pool.is_recording(session_id):
+        recordings.append(session_id, kind="action", ok=True, body=payload)
     return data
 
 
@@ -610,3 +677,34 @@ def reset_session(session_id: str, _: AuthDep):
     if status >= 400:
         raise HTTPException(status_code=status, detail=data)
     return data
+
+
+@app.get("/v1/recordings", tags=["recordings"])
+def list_recordings(
+    _: AuthDep,
+    job_id: Annotated[str | None, Query()] = None,
+    kind: Annotated[SeatKind | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+):
+    """List session recording journals (survive park/recycle; TTL via RECORDING_TTL_SEC)."""
+    return {
+        "recordings": recordings.list(job_id=job_id, kind=kind, limit=limit),
+    }
+
+
+@app.get("/v1/recordings/{session_id}", tags=["recordings"])
+def get_recording(session_id: str, _: AuthDep):
+    """Recording manifest: meta + events (frame paths relative; no embedded base64)."""
+    manifest = recordings.get(session_id)
+    if not manifest:
+        raise HTTPException(status_code=404, detail="recording not found")
+    return manifest
+
+
+@app.get("/v1/recordings/{session_id}/frames/{name}", tags=["recordings"])
+def get_recording_frame(session_id: str, name: str, _: AuthDep):
+    """Serve a captured PNG frame from a recording journal."""
+    path = recordings.frame_path(session_id, name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="frame not found")
+    return FileResponse(path, media_type="image/png", filename=path.name)

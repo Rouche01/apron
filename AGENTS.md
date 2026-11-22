@@ -17,6 +17,7 @@ Sibling consumer: `~/Projects/relay-os` (`@relay/engines-computer`, CommunityEng
 | `Dockerfile.scrcpy` + `scrcpy-web/` | **Phone HITL** — Mel0nFish/ws-scrcpy-enhanced (scrcpy-server 3.3.4) on host `:6083` (profile `phone`; Android 16 OK) |
 | `Dockerfile.gateway` + `gateway/` | **Gateway** — lease/park/release, proxy, Bearer auth, OpenAPI `:9000` |
 | `gateway/pool.py` | **SessionPool** — lock + lease/park/recycle/sweep/proxy; thin facade over seat helpers |
+| `gateway/recording.py` | **RecordingStore** — opt-in screenshot/action journals (local volume, TTL; not video) |
 | `gateway/cloud_phone_seats.py` · `physical_phone_seats.py` · `burst_seats.py` | **Seat helpers** — cloud provision/teardown; physical register/bind/Watch; lease-burst spawn/destroy |
 | `gateway/providers/` | **Cloud phone providers** — `CloudPhoneProvider` registry; `phone-harness` first impl |
 | `gateway/workers/` | **Burst WorkerFactory** — disabled by default; k3s backend for on-demand seats |
@@ -76,7 +77,7 @@ Base: `/v1` · Auth: `Authorization: Bearer $COMPUTER_API_TOKEN` (optional if to
 
 | Method | Path | Notes |
 |--------|------|--------|
-| `POST` | `/v1/sessions` | Lease a free worker (`kind`: `desktop` default, or `phone`). Phone without `seat_id` → cloud only; pass `seat_id` to pin physical (or any) seat. |
+| `POST` | `/v1/sessions` | Lease a free worker (`kind`: `desktop` default, or `phone`). Phone without `seat_id` → cloud only; pass `seat_id` to pin physical (or any) seat. Optional `record: true` starts a journal. |
 | `POST` | `/v1/sessions/{id}/heartbeat` | Extend lease TTL |
 | `POST` | `/v1/sessions/{id}/acquire` | Re-lease a **parked** desktop |
 | `DELETE` | `/v1/sessions/{id}` | Soft release → **park** (warm); `?recycle=true` wipes + frees |
@@ -84,6 +85,9 @@ Base: `/v1` · Auth: `Authorization: Bearer $COMPUTER_API_TOKEN` (optional if to
 | `GET` | `/v1/sessions/{id}/screenshot` | Base64 PNG |
 | `GET` | `/v1/sessions/{id}/observe` | Phone: PNG + trimmed UIAutomator `elements[]` (desktop: 404) |
 | `POST` | `/v1/sessions/{id}/action` | Forward to worker (`click`/`tap`, `swipe`, `type`, `key`, `launch`, `ref`, …) |
+| `GET` | `/v1/recordings` | List journals (`job_id` / `kind` / `limit`); survives park/recycle |
+| `GET` | `/v1/recordings/{id}` | Manifest (meta + events; frame paths, not base64) |
+| `GET` | `/v1/recordings/{id}/frames/{name}` | Raw PNG frame |
 | `GET` | `/v1/seats` | Per-worker inventory (`kind` + `free`/`leased`/`parked` + `session_id`/`vnc_url`/`job_id`) |
 | `GET` | `/v1/seats/{id}/devices` | Phone: adb devices visible to the seat |
 | `GET` | `/v1/seats/{id}/device` | Phone: current bind + selected device |
@@ -147,6 +151,10 @@ Plans: [`.cursor/plans/elastic_seats.plan.md`](.cursor/plans/elastic_seats.plan.
 | `PHONE_HARNESS_PROFILE_ID` | Optional persistent harness profile |
 | `REQUIRE_WORKER_INVENTORY` | Compose/`Dockerfile.gateway` set to `1` — refuse legacy URL lists |
 | `SESSION_TTL_SEC` / `PARKED_TTL_SEC` | Lease and parked idle TTLs |
+| `RECORDING_DIR` | Journal root (Compose volume `/data/recordings`) |
+| `RECORDING_TTL_SEC` | Delete journals after this (default 7d); **not** the same as park TTL |
+| `RECORD_SESSIONS_DEFAULT` | `1` → every lease records unless `record: false` |
+| `RECORDING_MAX_FRAME_BYTES` | Skip oversized frames (event note only) |
 | `SEAT_BURST_BACKEND` | `disabled` (default) or `k3s` — on-demand worker factory |
 | `DESKTOP_BURST_MAX` / `PHONE_BURST_MAX` | Max ephemeral seats beyond reserved (default `0`) |
 | `PHONE_BURST_PROVIDER` | Cloud provider id for phone burst seats (default `phone-harness`) |
