@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  gateway-tests:
+    name: Gateway unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gateway
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: gateway/requirements-dev.txt
+
+      - name: Install deps
+        run: pip install -r requirements-dev.txt
+
+      - name: Pytest (pool / providers / recording)
+        env:
+          WORKER_INVENTORY_PATH: ${{ github.workspace }}/gateway/workers.json
+          REQUIRE_WORKER_INVENTORY: "1"
+          COMPUTER_API_TOKEN: ""
+          RECORDING_DIR: ${{ runner.temp }}/recordings
+        run: |
+          python -m pytest \
+            test_pool_burst.py \
+            test_pool_phone_lease.py \
+            test_pool_register.py \
+            test_recording.py \
+            test_recording_api.py \
+            providers/test_phone_harness.py \
+            -q

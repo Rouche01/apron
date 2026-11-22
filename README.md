@@ -73,6 +73,16 @@ Not required for the desktop golden path. How to enable each profile and invento
 
 Phone without `seat_id` leases **cloud** seats only; pin a physical device with `"seat_id"` after register/bind.
 
+## Verify install
+
+After `docker compose up --build -d`:
+
+```bash
+./scripts/oss-smoke.sh
+```
+
+Release gate (clone → lease → act → recycle → recordings + CI): [docs/oss-smoke.md](docs/oss-smoke.md).
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).

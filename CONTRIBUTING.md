@@ -15,16 +15,29 @@ Thanks for interest in Computer Runtime. Inference stays **outside** this projec
 cp -n .env.example .env
 docker compose up --build -d
 
-# Gateway unit tests (pool / providers)
-cd gateway && python -m pytest test_pool_burst.py test_pool_phone_lease.py test_pool_register.py providers/test_phone_harness.py -q
+# Gateway unit tests (same set as CI)
+cd gateway
+pip install -r requirements-dev.txt
+WORKER_INVENTORY_PATH=./workers.json REQUIRE_WORKER_INVENTORY=1 \
+  COMPUTER_API_TOKEN= RECORDING_DIR=/tmp/cwa-recordings \
+  python -m pytest \
+    test_pool_burst.py test_pool_phone_lease.py test_pool_register.py \
+    test_recording.py test_recording_api.py \
+    providers/test_phone_harness.py -q
 ```
 
-Bind examples and tool schemas: [BINDING.md](BINDING.md).
+Compose golden path (lease → act → recycle → recordings):
+
+```bash
+./scripts/oss-smoke.sh
+```
+
+Full release checklist: [docs/oss-smoke.md](docs/oss-smoke.md). Bind examples: [BINDING.md](BINDING.md).
 
 ## Pull requests
 
 - Describe **why**, not only what.
-- Include how you tested (compose smoke and/or pytest).
+- Include how you tested (compose smoke and/or pytest). CI must stay green.
 - Don’t commit secrets (`.env`, API keys, kubeconfigs).
 
 ## Security
