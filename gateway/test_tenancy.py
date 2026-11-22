@@ -24,7 +24,9 @@ def test_registry_auth_and_duplicates(tmp_path: Path):
                     {
                         "id": "acme",
                         "api_keys": ["key-acme"],
-                        "seat_ids": ["desk1"],
+                        "seat_ids": ["desk1", "desk1b"],
+                        "max_concurrent_leases": 1,
+                        "max_lease_ttl_sec": 120,
                     },
                     {
                         "id": "beta",
@@ -41,6 +43,12 @@ def test_registry_auth_and_duplicates(tmp_path: Path):
     assert acme is not None and acme.id == "acme"
     assert acme.may_use_seat("desk1")
     assert not acme.may_use_seat("desk2")
+    assert acme.max_concurrent_leases == 1
+    assert acme.clamp_ttl_sec(9999) == 120
+    assert acme.clamp_ttl_sec(None) == 120
+    beta = reg.authenticate_key("key-beta")
+    assert beta is not None and beta.max_concurrent_leases == 1  # default len(seat_ids)
+    assert beta.clamp_ttl_sec(600) == 600
     assert reg.authenticate_key("nope") is None
 
     bad = tmp_path / "dup.json"
@@ -208,3 +216,94 @@ def test_tenant_cannot_pin_other_seat(tenant_client):
         json={"seat_id": "desk2", "kind": "desktop"},
     )
     assert r.status_code == 404
+
+
+@pytest.fixture
+def capped_tenant_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Acme owns desk1+desk2 but max_concurrent_leases=1 and short TTL cap."""
+    tenants_path = tmp_path / "tenants.json"
+    tenants_path.write_text(
+        json.dumps(
+            {
+                "tenants": [
+                    {
+                        "id": "acme",
+                        "api_keys": ["key-acme"],
+                        "seat_ids": ["desk1", "desk2"],
+                        "max_concurrent_leases": 1,
+                        "max_lease_ttl_sec": 60,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    import app as app_mod
+    import tenancy as tenancy_mod
+
+    reg = tenancy_mod.TenantRegistry.from_path(tenants_path)
+    monkeypatch.setattr(app_mod, "tenants", reg)
+    monkeypatch.setattr(app_mod, "API_TOKEN", "ops-token")
+    monkeypatch.setattr(app_mod, "recordings", RecordingStore(tmp_path / "rec", ttl_sec=3600))
+
+    fake = SessionPool(
+        [
+            WorkerSpec(
+                id="desk1",
+                kind="desktop",
+                url="http://worker-1:8000",
+                vnc_url="http://localhost:6081/vnc.html",
+            ),
+            WorkerSpec(
+                id="desk2",
+                kind="desktop",
+                url="http://worker-2:8000",
+                vnc_url="http://localhost:6082/vnc.html",
+            ),
+        ],
+        default_ttl_sec=600,
+        parked_ttl_sec=1800,
+    )
+    monkeypatch.setattr(app_mod, "pool", fake)
+    return TestClient(app_mod.app), fake
+
+
+def test_tenant_concurrent_cap_429(capped_tenant_client):
+    tc, pool = capped_tenant_client
+    acme = {"Authorization": "Bearer key-acme"}
+    first = tc.post(
+        "/v1/sessions",
+        headers=acme,
+        json={"job_id": "j1", "ttl_sec": 600},
+    )
+    assert first.status_code == 200, first.text
+    # TTL clamped to 60s plan cap (not requested 600)
+    from datetime import datetime, timezone
+
+    exp = datetime.fromisoformat(first.json()["expires_at"].replace("Z", "+00:00"))
+    now = datetime.now(timezone.utc)
+    assert 0 < (exp - now).total_seconds() <= 65
+
+    second = tc.post(
+        "/v1/sessions",
+        headers=acme,
+        json={"job_id": "j2"},
+    )
+    assert second.status_code == 429, second.text
+    assert second.json()["detail"]["code"] == "tenant_lease_cap"
+
+    # Soft park still holds the seat toward the cap
+    sid = first.json()["session_id"]
+    assert tc.delete(f"/v1/sessions/{sid}", headers=acme).status_code == 200
+    third = tc.post("/v1/sessions", headers=acme, json={"job_id": "j3"})
+    assert third.status_code == 429
+
+    # Reattach same job does not 429
+    reattach = tc.post(
+        "/v1/sessions",
+        headers=acme,
+        json={"job_id": "j1"},
+    )
+    assert reattach.status_code == 200, reattach.text
+    assert reattach.json()["session_id"] == sid
+    assert pool.tenant_held_count("acme") == 1

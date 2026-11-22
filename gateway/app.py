@@ -547,11 +547,31 @@ def create_session(
     kind: SeatKind = body.kind
     allowed = ctx.allowed_seat_ids()
     tenant_id = None if ctx.is_ops else ctx.id
+    ttl_sec = ctx.clamp_ttl_sec(body.ttl_sec)
+    if (
+        tenant_id
+        and ctx.max_concurrent_leases is not None
+        and not pool.tenant_lease_is_reattach(
+            tenant_id, kind=kind, job_id=job_id, seat_id=body.seat_id
+        )
+        and pool.tenant_held_count(tenant_id) >= ctx.max_concurrent_leases
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "ok": False,
+                "error": "tenant concurrent lease cap reached",
+                "code": "tenant_lease_cap",
+                "tenant_id": tenant_id,
+                "held": pool.tenant_held_count(tenant_id),
+                "max_concurrent_leases": ctx.max_concurrent_leases,
+            },
+        )
     try:
         info = pool.lease(
             agent_id=body.agent_id,
             job_id=job_id,
-            ttl_sec=body.ttl_sec,
+            ttl_sec=ttl_sec,
             kind=kind,
             seat_id=body.seat_id,
             allowed_seat_ids=allowed,
@@ -631,7 +651,7 @@ def create_session(
 @app.post("/v1/sessions/{session_id}/heartbeat", response_model=LeaseResponse, tags=["sessions"])
 def heartbeat(session_id: str, ctx: TenantDep, body: HeartbeatRequest = HeartbeatRequest()):
     _require_session_access(ctx, session_id)
-    info = pool.heartbeat(session_id, ttl_sec=body.ttl_sec)
+    info = pool.heartbeat(session_id, ttl_sec=ctx.clamp_ttl_sec(body.ttl_sec))
     if not info:
         raise HTTPException(status_code=404, detail="session not found or expired")
     return _lease_response(info)
@@ -647,7 +667,7 @@ def acquire_session(
     _require_session_access(ctx, session_id)
     result = pool.acquire(
         session_id,
-        ttl_sec=body.ttl_sec,
+        ttl_sec=ctx.clamp_ttl_sec(body.ttl_sec),
         agent_id=body.agent_id,
     )
     if result.error == "not_found":

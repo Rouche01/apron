@@ -21,6 +21,8 @@ class Tenant:
     id: str
     api_keys: frozenset[str]
     seat_ids: frozenset[str]
+    max_concurrent_leases: int  # leased+parked held by this tenant
+    max_lease_ttl_sec: int | None  # clamp request TTL; None = no extra clamp
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,8 @@ class TenantContext:
     id: str | None
     seat_ids: frozenset[str] | None  # None = all seats (ops / OSS)
     is_ops: bool = False
+    max_concurrent_leases: int | None = None
+    max_lease_ttl_sec: int | None = None
 
     def may_use_seat(self, seat_id: str) -> bool:
         if self.is_ops or self.seat_ids is None:
@@ -41,6 +45,15 @@ class TenantContext:
         if self.is_ops or self.seat_ids is None:
             return None
         return set(self.seat_ids)
+
+    def clamp_ttl_sec(self, ttl_sec: int | None) -> int | None:
+        """Apply plan max_lease_ttl_sec when set; None input stays None (pool default)."""
+        if self.is_ops or self.max_lease_ttl_sec is None:
+            return ttl_sec
+        cap = max(30, int(self.max_lease_ttl_sec))
+        if ttl_sec is None:
+            return cap
+        return min(max(30, int(ttl_sec)), cap)
 
 
 def filter_seats(ctx: TenantContext, seats: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -86,7 +99,44 @@ class TenantRegistry:
             seats = frozenset(str(s).strip() for s in seats_raw if str(s).strip())
             if not seats:
                 raise ValueError(f"tenants[{i}].seat_ids has no non-empty ids")
-            tenants.append(Tenant(id=tid, api_keys=keys, seat_ids=seats))
+            max_conc = row.get("max_concurrent_leases")
+            if max_conc is None or max_conc == "":
+                concurrent = len(seats)
+            else:
+                try:
+                    concurrent = int(max_conc)
+                except (TypeError, ValueError) as e:
+                    raise ValueError(
+                        f"tenants[{i}].max_concurrent_leases must be an int"
+                    ) from e
+                if concurrent < 1:
+                    raise ValueError(
+                        f"tenants[{i}].max_concurrent_leases must be >= 1"
+                    )
+            max_ttl_raw = row.get("max_lease_ttl_sec")
+            max_ttl: int | None
+            if max_ttl_raw is None or max_ttl_raw == "":
+                max_ttl = None
+            else:
+                try:
+                    max_ttl = int(max_ttl_raw)
+                except (TypeError, ValueError) as e:
+                    raise ValueError(
+                        f"tenants[{i}].max_lease_ttl_sec must be an int"
+                    ) from e
+                if max_ttl < 30:
+                    raise ValueError(
+                        f"tenants[{i}].max_lease_ttl_sec must be >= 30"
+                    )
+            tenants.append(
+                Tenant(
+                    id=tid,
+                    api_keys=keys,
+                    seat_ids=seats,
+                    max_concurrent_leases=concurrent,
+                    max_lease_ttl_sec=max_ttl,
+                )
+            )
         if not tenants:
             raise ValueError("tenants file has no tenants")
         reg = cls(tenants)
@@ -101,7 +151,13 @@ class TenantRegistry:
         t = self._by_key.get(token)
         if not t:
             return None
-        return TenantContext(id=t.id, seat_ids=t.seat_ids, is_ops=False)
+        return TenantContext(
+            id=t.id,
+            seat_ids=t.seat_ids,
+            is_ops=False,
+            max_concurrent_leases=t.max_concurrent_leases,
+            max_lease_ttl_sec=t.max_lease_ttl_sec,
+        )
 
     def tenant_ids(self) -> list[str]:
         return [t.id for t in self._tenants]

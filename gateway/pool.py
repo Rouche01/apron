@@ -299,6 +299,49 @@ class SessionPool:
                 return None
             return slot.tenant_id
 
+    def tenant_held_count(self, tenant_id: str) -> int:
+        """Leased + parked slots owned by tenant_id (plan concurrent usage)."""
+        with self._lock:
+            self._park_expired_leases_locked(_utcnow())
+            return sum(
+                1
+                for s in self._slots
+                if s.tenant_id == tenant_id and s.state in ("leased", "parked")
+            )
+
+    def tenant_lease_is_reattach(
+        self,
+        tenant_id: str,
+        *,
+        kind: SeatKind,
+        job_id: str | None,
+        seat_id: str | None,
+    ) -> bool:
+        """True if this lease would reclaim an existing parked seat for the tenant."""
+        pin = (seat_id or "").strip() or None
+        jid = (job_id or "").strip() or None
+        with self._lock:
+            self._park_expired_leases_locked(_utcnow())
+            if jid:
+                for slot in self._slots:
+                    if (
+                        slot.state == "parked"
+                        and slot.job_id == jid
+                        and slot.kind == kind
+                        and slot.tenant_id == tenant_id
+                    ):
+                        return True
+            if pin:
+                slot = self._find_seat_locked(pin)
+                if (
+                    slot
+                    and slot.state == "parked"
+                    and slot.kind == kind
+                    and slot.tenant_id == tenant_id
+                ):
+                    return True
+            return False
+
     def _seat_allowed_locked(
         self, seat_id: str, allowed_seat_ids: set[str] | None
     ) -> bool:

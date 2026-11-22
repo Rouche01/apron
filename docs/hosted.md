@@ -45,30 +45,33 @@ When `TENANTS_PATH` is unset: legacy OSS behavior (`COMPUTER_API_TOKEN` optional
 - `GET /v1/seats` and recordings list are filtered per tenant
 - Lease-burst is **not** used for allowlisted customers (no spawn outside their seats)
 
-## Capacity model (MVP vs elastic)
+## Capacity model + metering
 
-**This MVP = reserved seats, not elastic fleet.**
+**Reserved seats + plan caps** (still not a full autoscaler).
 
-| Behavior | What happens today |
-|----------|-------------------|
-| Seat set | Fixed `seat_ids` in `tenants.json` (ops pre-assigns warm inventory) |
-| Concurrent leases | At most one exclusive lease **per seat** in the allowlist (pool semantics unchanged) |
-| On-the-fly new computers | **No** — customers cannot burst/spawn beyond their list |
-| Growing a customer | Ops edits `seat_ids` (and ensures those seats exist in inventory), then reloads/recreates gateway |
+| Field | Meaning |
+|-------|---------|
+| `seat_ids` | Fixed allowlist of inventory seats this tenant may claim |
+| `max_concurrent_leases` | Max **leased + parked** sessions owned by the tenant (default = `len(seat_ids)`) |
+| `max_lease_ttl_sec` | Optional clamp on lease / heartbeat / acquire TTL (min 30) |
 
-Example: `"seat_ids": ["desk1"]` → that tenant can hold **one** desktop lease at a time. `"seat_ids": ["desk1","desk2"]` → up to **two** concurrent leases, still only those two machines.
+| Behavior | What happens |
+|----------|----------------|
+| New lease while at cap | **429** `tenant_lease_cap` (plan overage — not the same as pool empty) |
+| Reattach (`job_id` / parked pin) | Does **not** consume an extra concurrent slot |
+| No free seat in allowlist | **503** `no free … workers` (capacity) |
+| On-the-fly new computers | **No** — customers still cannot burst outside `seat_ids` |
+| Growing a customer | Ops adds seats to inventory + `seat_ids`, and/or raises `max_concurrent_leases` (cannot exceed seats they can actually claim) |
 
-That is intentional for invite-only hosted: predictable capacity and simple isolation. It is **not** “spin up N computers on demand.”
+Example: `"seat_ids": ["desk1","desk2"], "max_concurrent_leases": 1` → two possible machines, but only **one** held session at a time. `"max_lease_ttl_sec": 3600` → requests for longer TTLs are clamped to 1h.
 
-### What elastic would look like (later)
+### What fuller elasticity would look like (later)
 
-When a customer needs a variable number of leased computers:
+1. Shared pool / optional empty allowlist + burst under the same concurrent cap  
+2. Cumulative seat-time billing / quotas (beyond per-lease TTL clamp)  
+3. Hard stacks per large customer  
 
-1. **Caps, not (only) seat lists** — e.g. `max_concurrent_leases` on the tenant; claim any free seat of the requested `kind` (and/or burst), tagged with `tenant_id` (`hosted-metering`).
-2. **Shared / burst pool** — relax “no burst for allowlisted customers”; enforce 429/503 when over plan.
-3. **Hard stacks** (optional) — separate Compose/k3s namespace per large customer for stronger isolation at higher ops cost.
-
-Until those land, treat `seat_ids` as **reserved capacity** you sell/assign, not an autoscaler.
+Until then, treat `seat_ids` as reserved inventory and caps as the plan envelope.
 
 ## Public URLs (desktop first)
 
@@ -126,7 +129,7 @@ If `TENANTS_PATH` is set and `GATEWAY_PUBLIC_BASE` still looks like `localhost` 
 
 ## Not in this MVP
 
-- Concurrent lease / seat-time caps and shared-pool elasticity (`hosted-metering`)
-- Object-storage recordings / Stripe key provisioning
+- Shared-pool / burst elasticity beyond the seat allowlist  
+- Object-storage recordings / Stripe key provisioning  
 
 See [docs/v1.md](v1.md) for the shared `/v1` contract.
