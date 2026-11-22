@@ -1,0 +1,15 @@
+{
+  "_comment": "MVP: seat_ids are a fixed reserved allowlist (not elastic burst). See docs/hosted.md.",
+  "tenants": [
+    {
+      "id": "acme",
+      "api_keys": ["cwa_test_acme_replace_me"],
+      "seat_ids": ["desk1"]
+    },
+    {
+      "id": "beta",
+      "api_keys": ["cwa_test_beta_replace_me"],
+      "seat_ids": ["desk2"]
+    }
+  ]
+}

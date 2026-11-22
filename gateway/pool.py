@@ -85,6 +85,7 @@ class WorkerSlot:
     warm_spawned: bool = False  # register-spawned reserved physical (kept until unregister)
     factory_handle: str | None = None  # WorkerFactory.destroy id
     recording: bool = False  # opt-in journal capture (gateway RecordingStore)
+    tenant_id: str | None = None  # soft tenancy owner while leased/parked
 
 
 @dataclass
@@ -281,6 +282,7 @@ class SessionPool:
         slot.expires_at = None
         slot.parked_at = None
         slot.recording = False
+        slot.tenant_id = None
         # Drop live cloud session fields; inventory provider name stays.
         slot.provider_session_id = None
         slot.cloud_watch_url = None
@@ -288,6 +290,21 @@ class SessionPool:
         if slot.provider:
             slot.bound_serial = None
             slot.vnc_url = slot.inventory_vnc_url
+
+    def session_tenant(self, session_id: str) -> str | None:
+        """Tenant that owns a leased or parked session, if any."""
+        with self._lock:
+            slot = self._find_locked(session_id)
+            if not slot or slot.state == "free":
+                return None
+            return slot.tenant_id
+
+    def _seat_allowed_locked(
+        self, seat_id: str, allowed_seat_ids: set[str] | None
+    ) -> bool:
+        if allowed_seat_ids is None:
+            return True
+        return seat_id in allowed_seat_ids
 
     def _park_locked(self, slot: WorkerSlot, now: datetime) -> None:
         self._queue_recording_finalize_locked(slot)
@@ -440,6 +457,8 @@ class SessionPool:
         ttl_sec: int | None = None,
         kind: SeatKind = "desktop",
         seat_id: str | None = None,
+        allowed_seat_ids: set[str] | None = None,
+        tenant_id: str | None = None,
     ) -> LeaseInfo | None:
         """Reattach a parked seat for job_id if present; else claim a free worker of kind.
 
@@ -451,6 +470,9 @@ class SessionPool:
         WorkerFactory. Cloud seats: provision + worker bind after claim. Raises
         CloudPhoneProviderError on provider/bind failure (seat returned to free).
         Raises WorkerFactoryError on burst spawn failure.
+
+        allowed_seat_ids: when set, only those seats may be claimed (soft tenancy).
+        Burst is skipped when an allowlist is set (customers cannot spawn outside pool).
         """
         ttl = _clamp_ttl(ttl_sec if ttl_sec is not None else self._default_ttl)
         now = _utcnow()
@@ -468,17 +490,27 @@ class SessionPool:
                         slot.state == "parked"
                         and slot.job_id == job_id
                         and slot.kind == kind
+                        and self._seat_allowed_locked(slot.seat_id, allowed_seat_ids)
+                        and (
+                            tenant_id is None
+                            or slot.tenant_id is None
+                            or slot.tenant_id == tenant_id
+                        )
                     ):
                         slot.state = "leased"
                         slot.parked_at = None
                         slot.agent_id = agent_id if agent_id is not None else slot.agent_id
                         slot.expires_at = now + timedelta(seconds=ttl)
+                        if tenant_id is not None:
+                            slot.tenant_id = tenant_id
                         info = self._lease_info(slot)
                         if slot.provider:
                             cloud_reattach_seat = slot.seat_id
                         break
 
             if info is None and pin:
+                if not self._seat_allowed_locked(pin, allowed_seat_ids):
+                    raise SeatPinError(f"seat {pin!r} not found", code="seat_not_found")
                 slot = self._find_seat_locked(pin)
                 if not slot:
                     raise SeatPinError(f"seat {pin!r} not found", code="seat_not_found")
@@ -503,6 +535,8 @@ class SessionPool:
                 slot.state = "leased"
                 slot.parked_at = None
                 slot.expires_at = now + timedelta(seconds=ttl)
+                if tenant_id is not None:
+                    slot.tenant_id = tenant_id
                 info = self._lease_info(slot)
                 if slot.provider:
                     if slot.provider_session_id:
@@ -514,6 +548,8 @@ class SessionPool:
                 for slot in self._slots:
                     if slot.state != "free" or slot.kind != kind:
                         continue
+                    if not self._seat_allowed_locked(slot.seat_id, allowed_seat_ids):
+                        continue
                     # Phone default: cloud only; physical requires seat_id pin above.
                     if kind == "phone" and not slot.provider:
                         continue
@@ -524,6 +560,8 @@ class SessionPool:
                     slot.job_id = job_id
                     slot.expires_at = now + timedelta(seconds=ttl)
                     slot.parked_at = None
+                    if tenant_id is not None:
+                        slot.tenant_id = tenant_id
                     info = self._lease_info(slot)
                     if slot.provider:
                         cloud_provision_seat = slot.seat_id
@@ -532,6 +570,9 @@ class SessionPool:
         if info is None:
             # Exact pin never falls through to burst.
             if pin:
+                return None
+            # Soft tenancy: do not burst outside the customer allowlist.
+            if allowed_seat_ids is not None:
                 return None
             return self._lease_burst(
                 kind=kind,

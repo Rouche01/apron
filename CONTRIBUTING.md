@@ -22,7 +22,7 @@ WORKER_INVENTORY_PATH=./workers.json REQUIRE_WORKER_INVENTORY=1 \
   COMPUTER_API_TOKEN= RECORDING_DIR=/tmp/cwa-recordings \
   python -m pytest \
     test_pool_burst.py test_pool_phone_lease.py test_pool_register.py \
-    test_recording.py test_recording_api.py \
+    test_recording.py test_recording_api.py test_tenancy.py \
     providers/test_phone_harness.py -q
 ```
 

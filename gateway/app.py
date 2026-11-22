@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -21,6 +22,13 @@ from pool import SeatPinError, SessionPool
 from providers import registered_names
 from providers.base import CloudPhoneProviderError
 from recording import RecordingStore, resolve_record_flag
+from tenancy import (
+    TenantContext,
+    filter_seats,
+    load_registry_from_env,
+    ops_context,
+    oss_context,
+)
 from workers import build_worker_factory
 from workers.base import WorkerFactoryError
 
@@ -48,6 +56,10 @@ pool = SessionPool(
     worker_factory=_FACTORY,
 )
 recordings = RecordingStore()
+try:
+    tenants = load_registry_from_env()
+except (OSError, ValueError, json.JSONDecodeError) as e:
+    raise RuntimeError(f"invalid TENANTS_PATH: {e}") from e
 
 _security = HTTPBearer(auto_error=False)
 
@@ -69,7 +81,13 @@ async def lifespan(_app: FastAPI):
     stop = threading.Event()
     t = threading.Thread(target=_reaper_loop, args=(stop,), daemon=True, name="lease-reaper")
     t.start()
-    if not API_TOKEN:
+    if tenants:
+        logger.info(
+            "tenancy enabled: %d tenants (ops key %s)",
+            len(tenants.tenant_ids()),
+            "set" if API_TOKEN else "unset",
+        )
+    elif not API_TOKEN:
         logger.warning("COMPUTER_API_TOKEN unset — gateway auth is disabled (dev only)")
     inv = os.environ.get("WORKER_INVENTORY_PATH", "").strip() or "(legacy WORKER_URLS)"
     logger.info(
@@ -107,16 +125,48 @@ app = FastAPI(
 )
 
 
-def require_auth(
+def require_tenant(
     creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_security)],
-) -> None:
-    if not API_TOKEN:
-        return
-    if creds is None or creds.scheme.lower() != "bearer" or creds.credentials != API_TOKEN:
+) -> TenantContext:
+    """Resolve Bearer → TenantContext (OSS single-token or multi-tenant keys)."""
+    token = ""
+    if creds is not None and creds.scheme.lower() == "bearer":
+        token = (creds.credentials or "").strip()
+
+    if tenants is not None:
+        if API_TOKEN and token == API_TOKEN:
+            return ops_context()
+        if token:
+            ctx = tenants.authenticate_key(token)
+            if ctx is not None:
+                return ctx
         raise HTTPException(status_code=401, detail="invalid or missing bearer token")
 
+    # OSS: optional single COMPUTER_API_TOKEN
+    if not API_TOKEN:
+        return oss_context()
+    if token == API_TOKEN:
+        return oss_context()
+    raise HTTPException(status_code=401, detail="invalid or missing bearer token")
 
-AuthDep = Annotated[None, Depends(require_auth)]
+
+TenantDep = Annotated[TenantContext, Depends(require_tenant)]
+# Backward-compatible alias for any external imports / older patches
+AuthDep = TenantDep
+
+
+def _require_session_access(ctx: TenantContext, session_id: str) -> None:
+    """Cross-tenant session ids look like missing (404)."""
+    if ctx.is_ops:
+        return
+    if pool.session_tenant(session_id) != ctx.id:
+        raise HTTPException(status_code=404, detail="session not found or expired")
+
+
+def _require_seat_access(ctx: TenantContext, seat_id: str) -> None:
+    if ctx.may_use_seat(seat_id):
+        return
+    raise HTTPException(status_code=404, detail="seat not found")
 
 
 class LeaseRequest(BaseModel):
@@ -199,7 +249,9 @@ def _lease_response(info) -> LeaseResponse:
     )
 
 
-def _start_recording_for_lease(info, *, record: bool | None) -> bool:
+def _start_recording_for_lease(
+    info, *, record: bool | None, tenant_id: str | None = None
+) -> bool:
     """Create journal + set slot flag when record resolves true. Returns recording on."""
     if not resolve_record_flag(record):
         pool.set_recording(info.session_id, False)
@@ -211,6 +263,7 @@ def _start_recording_for_lease(info, *, record: bool | None) -> bool:
             seat_id=info.seat_id or None,
             agent_id=info.agent_id,
             job_id=info.job_id,
+            tenant_id=tenant_id,
         )
     except ValueError as e:
         logger.warning("recording start failed session=%s: %s", info.session_id, e)
@@ -256,9 +309,9 @@ def health():
 
 
 @app.get("/v1/seats", tags=["ops"])
-def list_seats(_: AuthDep):
+def list_seats(ctx: TenantDep):
     """Per-worker inventory: state, session_id, vnc_url, job_id (for Desk inspect/recycle)."""
-    seats = pool.list_seats()
+    seats = filter_seats(ctx, pool.list_seats())
     return {
         "ok": True,
         "workers": pool.worker_count,
@@ -287,8 +340,9 @@ class SeatBindBody(BaseModel):
 
 
 @app.get("/v1/seats/{seat_id}/devices", tags=["ops"])
-def seat_devices(seat_id: str, _: AuthDep):
+def seat_devices(seat_id: str, ctx: TenantDep):
     """List adb devices visible to a phone seat (Desk bind UI)."""
+    _require_seat_access(ctx, seat_id)
     slot = pool.get_seat(seat_id)
     if not slot:
         raise HTTPException(status_code=404, detail="seat not found")
@@ -313,8 +367,9 @@ def seat_devices(seat_id: str, _: AuthDep):
 
 
 @app.get("/v1/seats/{seat_id}/device", tags=["ops"])
-def seat_device(seat_id: str, _: AuthDep):
+def seat_device(seat_id: str, ctx: TenantDep):
     """Current bind status for a phone seat."""
+    _require_seat_access(ctx, seat_id)
     slot = pool.get_seat(seat_id)
     if not slot:
         raise HTTPException(status_code=404, detail="seat not found")
@@ -360,13 +415,26 @@ class DeviceRegisterBody(BaseModel):
 
 
 @app.post("/v1/devices/register", tags=["ops"])
-def devices_register(body: DeviceRegisterBody, _: AuthDep):
+def devices_register(body: DeviceRegisterBody, ctx: TenantDep):
     """Bind a physical device to a free phone seat; return seat_id for lease pin.
 
     Prefers a free unbound physical seat. If none and PHONE_WARM_SPAWN_MAX>0 with a
     WorkerFactory backend, spawns a warm reserved phone worker then binds.
     Human Allow once on first ADB trust. Pipeline leases with seat_id pin.
     """
+    pin = (body.seat_id or "").strip() or None
+    if pin:
+        _require_seat_access(ctx, pin)
+    elif not ctx.is_ops:
+        # Customers must pin a seat in their allowlist; ops may pick any free seat.
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "error": "seat_id required for non-ops tenants",
+                "code": "seat_id_required",
+            },
+        )
     if not (body.serial or "").strip() and not (body.connect or "").strip():
         raise HTTPException(
             status_code=400,
@@ -380,7 +448,7 @@ def devices_register(body: DeviceRegisterBody, _: AuthDep):
         serial=(body.serial or "").strip() or None,
         connect=(body.connect or "").strip() or None,
         unlock=(body.unlock or "").strip() or None,
-        seat_id=(body.seat_id or "").strip() or None,
+        seat_id=pin,
     )
     if status >= 400:
         raise HTTPException(status_code=status, detail=data)
@@ -392,19 +460,21 @@ class DeviceUnregisterBody(BaseModel):
 
 
 @app.post("/v1/devices/unregister", tags=["ops"])
-def devices_unregister(body: DeviceUnregisterBody, _: AuthDep):
+def devices_unregister(body: DeviceUnregisterBody, ctx: TenantDep):
     """Destroy a register-spawned warm physical seat (unbind + WorkerFactory.destroy).
 
     Inventory Compose seats are not removed — use POST /v1/seats/{id}/unbind instead.
     """
-    status, data = pool.unregister_physical_device((body.seat_id or "").strip())
+    sid = (body.seat_id or "").strip()
+    _require_seat_access(ctx, sid)
+    status, data = pool.unregister_physical_device(sid)
     if status >= 400:
         raise HTTPException(status_code=status, detail=data)
     return data
 
 
 @app.post("/v1/seats/{seat_id}/bind", tags=["ops"])
-def seat_bind(seat_id: str, body: SeatBindBody, _: AuthDep):
+def seat_bind(seat_id: str, body: SeatBindBody, ctx: TenantDep):
     """Bind a phone seat to a device without recreating containers.
 
     Human must tap Allow / Authorize on the phone the first time this host's
@@ -412,6 +482,7 @@ def seat_bind(seat_id: str, body: SeatBindBody, _: AuthDep):
     Refuses while the seat is leased. Prefer POST /v1/devices/register when
     Desk should pick a free seat and return seat_id for the agent pin.
     """
+    _require_seat_access(ctx, seat_id)
     if not (body.serial or "").strip() and not (body.connect or "").strip():
         raise HTTPException(status_code=400, detail="serial and/or connect required")
     status, data = pool.bind_phone_seat(
@@ -426,8 +497,9 @@ def seat_bind(seat_id: str, body: SeatBindBody, _: AuthDep):
 
 
 @app.post("/v1/seats/{seat_id}/unbind", tags=["ops"])
-def seat_unbind(seat_id: str, _: AuthDep):
+def seat_unbind(seat_id: str, ctx: TenantDep):
     """Clear runtime bind; fall back to ADB_SERIAL env on the phone worker."""
+    _require_seat_access(ctx, seat_id)
     status, data = pool.unbind_phone_seat(seat_id)
     if status >= 400:
         raise HTTPException(status_code=status, detail=data)
@@ -456,7 +528,7 @@ def ready():
 
 @app.post("/v1/sessions", response_model=LeaseResponse, tags=["sessions"])
 def create_session(
-    _: AuthDep,
+    ctx: TenantDep,
     body: LeaseRequest = LeaseRequest(),
     x_job_id: Annotated[str | None, Header()] = None,
 ):
@@ -466,6 +538,8 @@ def create_session(
     """
     job_id = body.job_id or x_job_id
     kind: SeatKind = body.kind
+    allowed = ctx.allowed_seat_ids()
+    tenant_id = None if ctx.is_ops else ctx.id
     try:
         info = pool.lease(
             agent_id=body.agent_id,
@@ -473,6 +547,8 @@ def create_session(
             ttl_sec=body.ttl_sec,
             kind=kind,
             seat_id=body.seat_id,
+            allowed_seat_ids=allowed,
+            tenant_id=tenant_id,
         )
     except SeatPinError as e:
         status = {
@@ -527,10 +603,12 @@ def create_session(
                 "burst_in_use": pool.burst_count_for(kind),
             },
         )
-    recording = _start_recording_for_lease(info, record=body.record)
+    recording = _start_recording_for_lease(
+        info, record=body.record, tenant_id=tenant_id
+    )
     info.recording = recording
     logger.info(
-        "leased session=%s kind=%s seat=%s agent=%s job=%s worker=%s recording=%s",
+        "leased session=%s kind=%s seat=%s agent=%s job=%s worker=%s recording=%s tenant=%s",
         info.session_id,
         info.kind,
         info.seat_id,
@@ -538,12 +616,14 @@ def create_session(
         info.job_id,
         info.worker_base_url,
         recording,
+        tenant_id or "-",
     )
     return _lease_response(info)
 
 
 @app.post("/v1/sessions/{session_id}/heartbeat", response_model=LeaseResponse, tags=["sessions"])
-def heartbeat(session_id: str, _: AuthDep, body: HeartbeatRequest = HeartbeatRequest()):
+def heartbeat(session_id: str, ctx: TenantDep, body: HeartbeatRequest = HeartbeatRequest()):
+    _require_session_access(ctx, session_id)
     info = pool.heartbeat(session_id, ttl_sec=body.ttl_sec)
     if not info:
         raise HTTPException(status_code=404, detail="session not found or expired")
@@ -553,10 +633,11 @@ def heartbeat(session_id: str, _: AuthDep, body: HeartbeatRequest = HeartbeatReq
 @app.post("/v1/sessions/{session_id}/acquire", response_model=LeaseResponse, tags=["sessions"])
 def acquire_session(
     session_id: str,
-    _: AuthDep,
+    ctx: TenantDep,
     body: AcquireRequest = AcquireRequest(),
 ):
     """Re-lease a parked desktop by session_id (serial same-job leases)."""
+    _require_session_access(ctx, session_id)
     result = pool.acquire(
         session_id,
         ttl_sec=body.ttl_sec,
@@ -578,10 +659,11 @@ def acquire_session(
 @app.delete("/v1/sessions/{session_id}", tags=["sessions"])
 def delete_session(
     session_id: str,
-    _: AuthDep,
+    ctx: TenantDep,
     recycle: Annotated[bool, Query(description="Wipe Firefox and free the worker")] = False,
 ):
     """Soft release parks the warm seat. Pass recycle=true to wipe and free."""
+    _require_session_access(ctx, session_id)
     if recycle:
         return _recycle_session(session_id)
     info = pool.release(session_id)
@@ -611,13 +693,15 @@ def _recycle_session(session_id: str) -> dict:
 
 
 @app.post("/v1/sessions/{session_id}/recycle", tags=["sessions"])
-def recycle_session(session_id: str, _: AuthDep):
+def recycle_session(session_id: str, ctx: TenantDep):
     """Wipe Firefox and free the worker (from leased or parked)."""
+    _require_session_access(ctx, session_id)
     return _recycle_session(session_id)
 
 
 @app.get("/v1/sessions/{session_id}/screenshot", tags=["observe"])
-def screenshot(session_id: str, _: AuthDep):
+def screenshot(session_id: str, ctx: TenantDep):
+    _require_session_access(ctx, session_id)
     status, data = pool.proxy_get(session_id, "/screenshot")
     if status >= 400:
         raise HTTPException(status_code=status, detail=data)
@@ -632,10 +716,11 @@ def screenshot(session_id: str, _: AuthDep):
 @app.get("/v1/sessions/{session_id}/observe", tags=["observe"])
 def observe(
     session_id: str,
-    _: AuthDep,
+    ctx: TenantDep,
     max_elements: Annotated[int, Query(ge=1, le=500)] = 200,
 ):
     """Phone: screenshot + trimmed UIAutomator elements. Desktop workers return 404."""
+    _require_session_access(ctx, session_id)
     status, data = pool.proxy_get(
         session_id, f"/observe?max_elements={max_elements}"
     )
@@ -660,7 +745,8 @@ def observe(
 
 
 @app.post("/v1/sessions/{session_id}/action", tags=["act"])
-def action(session_id: str, body: ActionBody, _: AuthDep):
+def action(session_id: str, body: ActionBody, ctx: TenantDep):
+    _require_session_access(ctx, session_id)
     payload = body.model_dump(exclude_none=True)
     status, data = pool.proxy_post(session_id, "/action", payload)
     if status >= 400:
@@ -671,8 +757,9 @@ def action(session_id: str, body: ActionBody, _: AuthDep):
 
 
 @app.post("/v1/sessions/{session_id}/reset", tags=["sessions"])
-def reset_session(session_id: str, _: AuthDep):
+def reset_session(session_id: str, ctx: TenantDep):
     """Reset Firefox on the leased worker without releasing the lease."""
+    _require_session_access(ctx, session_id)
     status, data = pool.proxy_post(session_id, "/session/reset", {})
     if status >= 400:
         raise HTTPException(status_code=status, detail=data)
@@ -681,20 +768,25 @@ def reset_session(session_id: str, _: AuthDep):
 
 @app.get("/v1/recordings", tags=["recordings"])
 def list_recordings(
-    _: AuthDep,
+    ctx: TenantDep,
     job_id: Annotated[str | None, Query()] = None,
     kind: Annotated[SeatKind | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
 ):
     """List session recording journals (survive park/recycle; TTL via RECORDING_TTL_SEC)."""
+    tenant_filter = None if ctx.is_ops else ctx.id
     return {
-        "recordings": recordings.list(job_id=job_id, kind=kind, limit=limit),
+        "recordings": recordings.list(
+            job_id=job_id, kind=kind, tenant_id=tenant_filter, limit=limit
+        ),
     }
 
 
 @app.get("/v1/recordings/{session_id}", tags=["recordings"])
-def get_recording(session_id: str, _: AuthDep):
+def get_recording(session_id: str, ctx: TenantDep):
     """Recording manifest: meta + events (frame paths relative; no embedded base64)."""
+    if not ctx.is_ops and not recordings.belongs_to_tenant(session_id, ctx.id or ""):
+        raise HTTPException(status_code=404, detail="recording not found")
     manifest = recordings.get(session_id)
     if not manifest:
         raise HTTPException(status_code=404, detail="recording not found")
@@ -702,8 +794,10 @@ def get_recording(session_id: str, _: AuthDep):
 
 
 @app.get("/v1/recordings/{session_id}/frames/{name}", tags=["recordings"])
-def get_recording_frame(session_id: str, name: str, _: AuthDep):
+def get_recording_frame(session_id: str, name: str, ctx: TenantDep):
     """Serve a captured PNG frame from a recording journal."""
+    if not ctx.is_ops and not recordings.belongs_to_tenant(session_id, ctx.id or ""):
+        raise HTTPException(status_code=404, detail="frame not found")
     path = recordings.frame_path(session_id, name)
     if path is None:
         raise HTTPException(status_code=404, detail="frame not found")

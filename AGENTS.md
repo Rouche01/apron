@@ -18,6 +18,7 @@ Sibling consumer: `~/Projects/relay-os` (`@relay/engines-computer`, CommunityEng
 | `Dockerfile.gateway` + `gateway/` | **Gateway** — lease/park/release, proxy, Bearer auth, OpenAPI `:9000` |
 | `gateway/pool.py` | **SessionPool** — lock + lease/park/recycle/sweep/proxy; thin facade over seat helpers |
 | `gateway/recording.py` | **RecordingStore** — opt-in screenshot/action journals (local volume, TTL; not video) |
+| `gateway/tenancy.py` | **TenantRegistry** — optional multi-customer API keys + seat allowlists (soft isolation) |
 | `gateway/cloud_phone_seats.py` · `physical_phone_seats.py` · `burst_seats.py` | **Seat helpers** — cloud provision/teardown; physical register/bind/Watch; lease-burst spawn/destroy |
 | `gateway/providers/` | **Cloud phone providers** — `CloudPhoneProvider` registry; `phone-harness` first impl |
 | `gateway/workers/` | **Burst WorkerFactory** — disabled by default; k3s backend for on-demand seats |
@@ -155,6 +156,7 @@ Plans: [`.cursor/plans/elastic_seats.plan.md`](.cursor/plans/elastic_seats.plan.
 | `RECORDING_TTL_SEC` | Delete journals after this (default 7d); **not** the same as park TTL |
 | `RECORD_SESSIONS_DEFAULT` | `1` → every lease records unless `record: false` |
 | `RECORDING_MAX_FRAME_BYTES` | Skip oversized frames (event note only) |
+| `TENANTS_PATH` | Optional tenants JSON (hosted soft isolation); unset = OSS single-token — [docs/hosted.md](docs/hosted.md) |
 | `SEAT_BURST_BACKEND` | `disabled` (default) or `k3s` — on-demand worker factory |
 | `DESKTOP_BURST_MAX` / `PHONE_BURST_MAX` | Max ephemeral seats beyond reserved (default `0`) |
 | `PHONE_BURST_PROVIDER` | Cloud provider id for phone burst seats (default `phone-harness`) |

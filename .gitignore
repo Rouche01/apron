@@ -6,6 +6,7 @@
 .env.*
 !.env.example
 !**/.env.example
+gateway/tenants.json
 .data/
 **/.pytest_recordings*/
 *.pem

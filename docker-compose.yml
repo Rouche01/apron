@@ -213,12 +213,16 @@ services:
       RECORDING_TTL_SEC: ${RECORDING_TTL_SEC:-604800}
       RECORD_SESSIONS_DEFAULT: ${RECORD_SESSIONS_DEFAULT:-0}
       RECORDING_MAX_FRAME_BYTES: ${RECORDING_MAX_FRAME_BYTES:-2000000}
+      # Hosted soft tenancy (optional). Leave unset for OSS single-token mode.
+      # TENANTS_PATH: /etc/computer/tenants.json
     volumes:
       # Host file must exist (missing path → Docker mounts an empty dir → gateway exits).
       # Physical phone: WORKER_INVENTORY_FILE=./gateway/workers.with-phone.json
       # Cloud / both: WORKER_INVENTORY_FILE=./gateway/workers.with-phone-cloud.json
       - ${WORKER_INVENTORY_FILE:-./gateway/workers.json}:/etc/computer/workers.json:ro
       - gateway_recordings:/data/recordings
+      # Uncomment with TENANTS_PATH for multi-customer keys (see docs/hosted.md):
+      # - ${TENANTS_FILE:-./gateway/tenants.json}:/etc/computer/tenants.json:ro
     depends_on:
       worker-1:
         condition: service_healthy

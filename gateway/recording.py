@@ -158,6 +158,7 @@ class RecordingStore:
         seat_id: str | None = None,
         agent_id: str | None = None,
         job_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> dict[str, Any]:
         """Create recording directory + meta.json. Idempotent if already started."""
         now = _utcnow()
@@ -175,6 +176,7 @@ class RecordingStore:
                 "seat_id": seat_id,
                 "agent_id": agent_id,
                 "job_id": job_id,
+                "tenant_id": tenant_id,
                 "started_at": _iso(now),
                 "ended_at": None,
                 "expires_at": _iso(now + timedelta(seconds=self.ttl_sec)),
@@ -290,6 +292,7 @@ class RecordingStore:
         *,
         job_id: str | None = None,
         kind: str | None = None,
+        tenant_id: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """List recording summaries, newest started_at first."""
@@ -308,6 +311,8 @@ class RecordingStore:
                     continue
                 if kind is not None and meta.get("kind") != kind:
                     continue
+                if tenant_id is not None and meta.get("tenant_id") != tenant_id:
+                    continue
                 rows.append(
                     {
                         "session_id": meta.get("session_id") or child.name,
@@ -315,6 +320,7 @@ class RecordingStore:
                         "seat_id": meta.get("seat_id"),
                         "agent_id": meta.get("agent_id"),
                         "job_id": meta.get("job_id"),
+                        "tenant_id": meta.get("tenant_id"),
                         "started_at": meta.get("started_at"),
                         "ended_at": meta.get("ended_at"),
                         "expires_at": meta.get("expires_at"),
@@ -323,6 +329,18 @@ class RecordingStore:
                 )
         rows.sort(key=lambda r: r.get("started_at") or "", reverse=True)
         return rows[:limit]
+
+    def belongs_to_tenant(self, session_id: str, tenant_id: str) -> bool:
+        """True if recording meta.tenant_id matches (missing meta → False)."""
+        with self._lock:
+            try:
+                session_dir = self._session_dir(session_id)
+            except ValueError:
+                return False
+            meta = self._read_meta(session_dir)
+            if not meta:
+                return False
+            return meta.get("tenant_id") == tenant_id
 
     def frame_path(self, session_id: str, name: str) -> Path | None:
         """Resolve a frame file under the session frames/ dir, or None."""
