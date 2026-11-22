@@ -1,23 +1,14 @@
-# Computer Runtime: gateway (public) + exclusive desktop workers (internal).
-# Optional physical phone: profile "phone" (see gateway/workers.with-phone.json).
-# Optional cloud phone: profile "phone-cloud" (see gateway/workers.with-phone-cloud.json).
-# Lease/TTL recycle is handled by the gateway; release calls worker /session/reset.
+# Computer Runtime — default: gateway + 2 desktop workers (no Compose profile).
+# Copy .env.example → .env, then:  docker compose up --build -d
+# Profiles / inventories: docs/profiles.md
 #
-#   docker compose up --build
-#   # physical Android (wireless/USB ADB on the host):
+#   # physical Android:
 #   COMPOSE_PROFILES=phone WORKER_INVENTORY_FILE=./gateway/workers.with-phone.json \
 #     docker compose up --build -d
-#   # cloud Android (Phone Harness) — needs PHONE_HARNESS_API_KEY in .env:
+#   # cloud Android (needs PHONE_HARNESS_API_KEY):
 #   COMPOSE_PROFILES=phone-cloud \
 #     WORKER_INVENTORY_FILE=./gateway/workers.with-phone-cloud.json \
 #     docker compose up --build -d
-#   # both physical + cloud:
-#   COMPOSE_PROFILES=phone,phone-cloud \
-#     WORKER_INVENTORY_FILE=./gateway/workers.with-phone-cloud.json \
-#     docker compose up --build -d
-#   export COMPUTER_API_TOKEN=dev-token   # must match .env
-#   curl -s -H "Authorization: Bearer $COMPUTER_API_TOKEN" \
-#     -X POST http://localhost:9000/v1/sessions
 
 services:
   worker-1:
