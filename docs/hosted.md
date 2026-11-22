@@ -6,6 +6,8 @@ Hard isolation (separate Compose stacks per customer) remains an ops escape hatc
 
 Also covered here: **public `GATEWAY_PUBLIC_BASE` + desktop Watch URLs** behind LB/Caddy (phone Watch later).
 
+**Ops (deploy, alerts, capacity, recording backup):** [hosted-ops.md](hosted-ops.md).
+
 ## Enable
 
 1. Copy [`gateway/tenants.example.json`](../gateway/tenants.example.json) → e.g. `gateway/tenants.json` and replace placeholder keys / `seat_ids`.
@@ -166,4 +168,4 @@ TTL remains `RECORDING_TTL_SEC` (default 7d) via the existing sweeper.
 - Shared-pool / burst elasticity beyond the seat allowlist  
 - Stripe key provisioning  
 
-See [docs/v1.md](v1.md) for the shared `/v1` contract.
+See [docs/v1.md](v1.md) for the shared `/v1` contract and [hosted-ops.md](hosted-ops.md) for beta deploy / alert / backup runbooks.

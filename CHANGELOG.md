@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Hosted beta ops: [docs/hosted-ops.md](docs/hosted-ops.md), [`scripts/hosted-health-probe.sh`](scripts/hosted-health-probe.sh), [`scripts/recording-backup.sh`](scripts/recording-backup.sh)
+
 ## [v0.1.0] — OSS launch
 
 First public-oriented tag of **Computer Runtime**.
