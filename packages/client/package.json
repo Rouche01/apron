@@ -1,5 +1,5 @@
 {
-  "name": "@computer-with-agent/client",
+  "name": "@apron/client",
   "version": "0.1.0",
   "description": "Typed HTTP client for the Computer Runtime gateway (/v1)",
   "license": "Apache-2.0",
@@ -41,6 +41,7 @@
     "directory": "packages/client"
   },
   "keywords": [
+    "apron",
     "computer-use",
     "agent",
     "gateway",
