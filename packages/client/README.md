@@ -19,17 +19,15 @@ Bump the client **major** when guaranteed `/v1` behavior breaks (new API prefix 
 
 ## Install
 
-When published:
-
 ```bash
 npm install @useapron/client
 ```
 
-From a sibling checkout (pre-publish):
+From a sibling checkout (dev / unpublished changes):
 
 ```bash
 npm install ../computer-with-agent/packages/client
-# build once in the client package: cd …/packages/client && npm install && npm run build
+# build once: cd …/packages/client && npm install && npm run build
 ```
 
 Env (same as curl bind):

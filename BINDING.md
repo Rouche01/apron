@@ -292,12 +292,9 @@ Typed wrapper around the same `/v1` routes. **No LLM inside** — pass screensho
 
 Compatibility: client **0.1.x** targets gateway OpenAPI **0.3.x** / [`docs/v1.md`](docs/v1.md). Breaking `/v1` changes need a new API prefix or a client major bump.
 
-Until published to npm, install from this repo:
-
 ```bash
-# from your agent project
-npm install ../computer-with-agent/packages/client
-# or: file:../../computer-with-agent/packages/client
+npm install @useapron/client
+# or from a sibling checkout: npm install ../computer-with-agent/packages/client
 ```
 
 ```ts
