@@ -1,6 +1,6 @@
 {
   "name": "@useapron/seat",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Seat policy loop (observe → decide → act) on top of @useapron/client",
   "license": "Apache-2.0",
   "type": "module",
@@ -9,7 +9,9 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
   "files": [
@@ -30,7 +32,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@useapron/client": "^0.1.1"
+    "@useapron/client": "^0.1.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -42,10 +42,8 @@ services:
       start_period: 90s
     restart: unless-stopped
 
+  # Same image as worker-1 — do not declare build here (BuildKit races on tag).
   worker-2:
-    build:
-      context: .
-      dockerfile: Dockerfile
     image: apron-worker:local
     hostname: worker-2
     networks: [computer_internal]
@@ -77,7 +75,7 @@ services:
   # containers on Mac. Mount ~/.android so the phone trusts this adb key.
   phone-1:
     profiles: ["phone"]
-    build:
+    build: &apron-phone-build
       context: .
       dockerfile: Dockerfile.phone
     image: apron-phone:local
@@ -154,11 +152,12 @@ services:
 
   # Cloud phone seat (kind=phone, provider=phone-harness). Bound on lease — no
   # host ADB keys / scrcpy. Opt-in via profile phone-cloud.
+  # Same Dockerfile/image as phone-1 (no separate build helper — that showed as Exited in Docker Desktop).
+  # If both phone + phone-cloud profiles are on and BuildKit races on the tag, retry or:
+  #   docker compose --profile phone build phone-1 && docker compose up -d
   phone-cloud-1:
     profiles: ["phone-cloud"]
-    build:
-      context: .
-      dockerfile: Dockerfile.phone
+    build: *apron-phone-build
     image: apron-phone:local
     networks: [computer_internal]
     ports:
