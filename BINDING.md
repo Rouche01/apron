@@ -4,6 +4,8 @@ Inference stays **outside** this project. Your agent leases a seat, loops (scree
 
 Stable gateway paths, status codes, and compatibility freeze: **[docs/v1.md](docs/v1.md)**.
 
+Bind with **curl** (below), raw HTTP, or the typed TypeScript client [`@computer-with-agent/client`](packages/client) (§6). Curl alone is enough for the OSS golden path.
+
 Default display (desktop): **1280×800**. Gateway: `http://localhost:9000` (Compose).
 
 Seat **kind** (inventory JSON via `WORKER_INVENTORY_PATH`): `desktop` (default) or `phone`. Optional inventory `provider` (e.g. `phone-harness`) marks a cloud phone seat — same `kind: phone` lease for agents; gateway provisions ADB + `watch_url`. `POST /v1/sessions` body field `kind` selects the pool; omit it for desktop. Lease response includes `kind` and `seat_id`.
@@ -12,7 +14,7 @@ Seat **kind** (inventory JSON via `WORKER_INVENTORY_PATH`): `desktop` (default) 
 
 **Register physical (ops):** `POST /v1/devices/register` with `{"connect":"ip:5555"}` (or `serial`) binds the first free unbound physical seat and returns `{seat_id, bound_serial, vnc_url}` for the agent pin. Optional `"seat_id"` rebinds that seat. If none are free and `PHONE_WARM_SPAWN_MAX>0` with `SEAT_BURST_BACKEND=k3s`, spawns a **warm reserved** phone worker (`warm_spawned`, survives recycle) then binds. Tear down with `POST /v1/devices/unregister` `{"seat_id":"phone-warm-…"}` (inventory seats: `/v1/seats/{id}/unbind` only).
 
-**Relay OS:** phase 1 needs no Relay package changes — bind with HTTP as below. Later work in `@relay/engines-computer` / browse-policy is sketched under **Relay OS → Downstream bind notes** in [`AGENTS.md`](AGENTS.md).
+**Relay OS:** can bind with HTTP or `@computer-with-agent/client` (this repo). Migration from workspace `@relay/engines-computer`: [`.cursor/plans/ts_client_sdk.plan.md`](.cursor/plans/ts_client_sdk.plan.md). Policy packs / Desk notes: **Relay OS → Downstream bind notes** in [`AGENTS.md`](AGENTS.md).
 
 ## Lease vs park vs recycle
 
@@ -284,7 +286,53 @@ curl -s -H "$AUTH" -H 'Content-Type: application/json' \
   "$GW/v1/sessions/$SID/action"
 ```
 
-## 6. Minimal Python bind
+## 6. TypeScript client (`@computer-with-agent/client`)
+
+Typed wrapper around the same `/v1` routes. **No LLM inside** — pass screenshots to your model, then `execute({ type: "action", … })`.
+
+Compatibility: client **0.1.x** targets gateway OpenAPI **0.3.x** / [`docs/v1.md`](docs/v1.md). Breaking `/v1` changes need a new API prefix or a client major bump.
+
+Until published to npm, install from this repo:
+
+```bash
+# from your agent project
+npm install ../computer-with-agent/packages/client
+# or: file:../../computer-with-agent/packages/client
+```
+
+```ts
+import { ComputerEngine } from "@computer-with-agent/client";
+
+const engine = new ComputerEngine({
+  baseUrl: process.env.COMPUTER_GATEWAY_URL ?? "http://localhost:9000",
+  token: process.env.COMPUTER_API_TOKEN,
+  agentId: "demo",
+});
+
+const lease = await engine.execute({
+  type: "lease",
+  params: { job_id: "demo-job", ttl_sec: 600 },
+});
+if (!lease.success) throw new Error(lease.error);
+
+console.log("Watch:", engine.getVncUrl(), engine.getKind(), engine.getSeatId());
+
+try {
+  const shot = await engine.execute({ type: "screenshot", params: {} });
+  // … pass shot.data?.image to your model …
+  await engine.execute({
+    type: "action",
+    params: { action: { type: "key", text: "ctrl+l" } },
+  });
+} finally {
+  // Soft park: await engine.execute({ type: "release", params: {} });
+  await engine.execute({ type: "recycle", params: {} });
+}
+```
+
+Phone: `params: { kind: "phone" }` on lease, or `claimPhoneSeat(engine)`. Desktop helpers: `ComputerTaskRunner` + `navigateToUrl` / builtins. Package README: [`packages/client/README.md`](packages/client/README.md).
+
+## 7. Minimal Python bind
 
 ```python
 import os, httpx
@@ -312,7 +360,7 @@ with httpx.Client(base_url=GW, headers=H, timeout=60) as c:
         c.delete(f"/v1/sessions/{sid}", params={"recycle": "true"})
 ```
 
-## 7. Minimal fetch bind
+## 8. Minimal fetch bind
 
 ```js
 const GW = process.env.GW ?? "http://localhost:9000";
@@ -343,7 +391,7 @@ try {
 }
 ```
 
-## 8. Ops tips
+## 9. Ops tips
 
 - Prefer `lease.api_base` from the lease response as the session prefix.
 - Send `X-Job-Id` (or body `job_id`) so serial steps can reattach and logs correlate.

@@ -51,7 +51,8 @@ Default inventory is two warm desktop seats (`gateway/workers.json`).
 
 ## Bind your agent
 
-Tool shapes and full curl / Python examples: **[BINDING.md](BINDING.md)**  
+Tool shapes and curl / TypeScript / Python examples: **[BINDING.md](BINDING.md)**  
+Typed client: [`packages/client`](packages/client) (`@computer-with-agent/client`) — optional; curl stays enough for the golden path  
 OpenAI / Anthropic-style JSON: [`schemas/`](schemas/)  
 Public HTTP contract (auth, lease/park/recycle, **503**, freeze notes): **[docs/v1.md](docs/v1.md)**
 
