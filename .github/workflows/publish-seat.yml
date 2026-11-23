@@ -26,6 +26,11 @@ permissions:
   contents: read
   id-token: write # OIDC for npm trusted publishing
 
+# One run per tag — overlapping re-runs / double pushes cancel the older one
+concurrency:
+  group: publish-seat-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   publish:
     name: npm publish @useapron/seat
@@ -69,6 +74,15 @@ jobs:
       - name: Build
         run: npm run build
 
-      # OIDC auth; provenance attestations are automatic with trusted publishing
+      # OIDC auth; provenance attestations are automatic with trusted publishing.
+      # Skip if the version is already on the registry (re-run / race after a successful publish).
       - name: Publish
-        run: npm publish --access public
+        run: |
+          set -euo pipefail
+          PKG="$(node -p "require('./package.json').version")"
+          NAME="$(node -p "require('./package.json').name")"
+          if npm view "${NAME}@${PKG}" version >/dev/null 2>&1; then
+            echo "${NAME}@${PKG} is already on the registry — skipping publish"
+            exit 0
+          fi
+          npm publish --access public

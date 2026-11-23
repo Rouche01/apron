@@ -125,6 +125,8 @@ git tag client-v0.1.1
 git push origin client-v0.1.1
 ```
 
+Push the tag **once**. Re-running the workflow or re-pushing the same tag will no-op if that version is already on npm (workflow skips). Do not force-recreate `client-v*` tags after a successful publish.
+
 Workflow: [`.github/workflows/publish-client.yml`](../../.github/workflows/publish-client.yml).
 
 Semver: bump **major** when guaranteed [`docs/v1.md`](../../docs/v1.md) behavior breaks; otherwise patch/minor as usual. Client `0.1.x` tracks OpenAPI **0.3.x**.

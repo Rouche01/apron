@@ -121,4 +121,6 @@ git tag seat-v0.1.0
 git push origin seat-v0.1.0
 ```
 
+Push the tag **once**. Re-running the workflow or re-pushing the same tag will no-op if that version is already on npm (workflow skips). Do not force-recreate `seat-v*` tags after a successful publish.
+
 Workflow: [`.github/workflows/publish-seat.yml`](../../.github/workflows/publish-seat.yml).
