@@ -72,6 +72,8 @@ services:
   # Boot ADB_* optional; attach later via POST /v1/seats/{id}/bind or /devices/register.
   phone-1:
     profiles: ["phone"]
+    # Google platform-tools are linux/amd64 (needed for adb pair).
+    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile.phone
@@ -99,6 +101,7 @@ services:
   # Phone HITL Watch (lease vnc_url → :6083). Device may arrive later via bind API.
   scrcpy-web:
     profiles: ["phone"]
+    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile.scrcpy
@@ -136,6 +139,7 @@ services:
   # Cloud phone seat (provider=phone-harness). Reuses apron-phone:local from phone-1 build.
   phone-cloud-1:
     profiles: ["phone-cloud"]
+    platform: linux/amd64
     image: apron-phone:local
     networks: [computer_internal]
     ports:

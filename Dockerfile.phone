@@ -1,13 +1,21 @@
-# Phone worker: FastAPI + adb. Prefer host network / USB passthrough for device access.
+# Phone worker: FastAPI + modern adb (needs `adb pair` for wireless debugging).
 # HITL (scrcpy-web) is configured on the gateway inventory vnc_url, not inside this image.
-FROM debian:bookworm-slim
-ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PORT=8000
+#
+# platform-tools Linux binaries are x86_64 — pin amd64 so Mac arm64 Docker uses qemu.
+FROM --platform=linux/amd64 debian:bookworm-slim
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PORT=8000 \
+    ANDROID_HOME=/opt/android-sdk \
+    PATH="/opt/android-sdk/platform-tools:/opt/venv/bin:${PATH}"
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    adb \
-    ca-certificates \
-    python3 \
-    python3-venv \
+COPY scripts/install-android-platform-tools.sh /tmp/install-android-platform-tools.sh
+RUN chmod +x /tmp/install-android-platform-tools.sh \
+    && /tmp/install-android-platform-tools.sh \
+    && rm -f /tmp/install-android-platform-tools.sh \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 COPY phone/requirements.txt /opt/phone/requirements.txt
@@ -17,7 +25,6 @@ RUN python3 -m venv /opt/venv \
 COPY phone/ /opt/phone/
 RUN chmod +x /opt/phone/entrypoint.sh
 
-ENV PATH="/opt/venv/bin:$PATH"
 WORKDIR /opt/phone
 EXPOSE 8000
 ENTRYPOINT ["/opt/phone/entrypoint.sh"]

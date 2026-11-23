@@ -39,15 +39,19 @@ RUN npm install --ignore-scripts \
     && cd dist && npm install --omit=dev --ignore-scripts \
     && npm rebuild node-pty
 
-FROM node:20-bookworm-slim
+# platform-tools Linux binaries are x86_64 — pin amd64 (same as Dockerfile.phone).
+FROM --platform=linux/amd64 node:20-bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive \
     NODE_ENV=production \
     WS_SCRCPY_CONFIG=/opt/ws-scrcpy/config.yaml \
-    HOME=/root
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    adb \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    HOME=/root \
+    ANDROID_HOME=/opt/android-sdk \
+    PATH="/opt/android-sdk/platform-tools:${PATH}"
+# Debian's adb lacks `adb pair`; match phone worker platform-tools.
+COPY scripts/install-android-platform-tools.sh /tmp/install-android-platform-tools.sh
+RUN chmod +x /tmp/install-android-platform-tools.sh \
+    && /tmp/install-android-platform-tools.sh \
+    && rm -f /tmp/install-android-platform-tools.sh
 
 COPY --from=builder /build/dist /opt/ws-scrcpy
 COPY scrcpy-web/config.yaml /opt/ws-scrcpy/config.yaml
