@@ -1,6 +1,6 @@
 {
   "name": "@useapron/client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Typed HTTP client for the Computer Runtime gateway (/v1)",
   "license": "Apache-2.0",
   "type": "module",
