@@ -128,6 +128,81 @@ class PhysicalSeatHost(Protocol):
     ) -> tuple[int, dict[str, Any]]: ...
 
 
+def probe_worker_device_status(
+    worker_url: str, *, timeout: float = 2.0
+) -> dict[str, Any]:
+    """Live adb readiness for a phone worker (Desk preflight / seats enrichment)."""
+    base = (worker_url or "").rstrip("/")
+    out: dict[str, Any] = {
+        "device_ready": False,
+        "device_state": None,
+        "device_serial": None,
+        "device_probe_ok": False,
+    }
+    if not base:
+        out["device_error"] = "missing worker url"
+        return out
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            r = client.get(f"{base}/device")
+            try:
+                data = r.json()
+            except Exception:
+                data = {}
+    except httpx.HTTPError as e:
+        out["device_error"] = f"worker unreachable: {e}"
+        return out
+
+    if r.status_code >= 400:
+        detail = data.get("detail") if isinstance(data, dict) else None
+        out["device_error"] = detail or f"HTTP {r.status_code}"
+        return out
+
+    out["device_probe_ok"] = True
+    if not isinstance(data, dict):
+        return out
+
+    selected = data.get("selected")
+    state = None
+    serial = None
+    if isinstance(selected, dict):
+        state = selected.get("state")
+        serial = selected.get("serial")
+    if not serial:
+        serial = data.get("bound_serial")
+    out["device_state"] = state
+    out["device_serial"] = serial
+    out["device_ready"] = state == "device"
+    return out
+
+
+def enrich_seats_device_status(
+    seats: list[dict[str, Any]],
+    *,
+    timeout: float = 2.0,
+) -> dict[str, Any]:
+    """Attach live device_* fields to phone seats; return a small summary."""
+    physical_total = 0
+    physical_ready = 0
+    for seat in seats:
+        if seat.get("kind") != "phone":
+            continue
+        worker = seat.get("worker_base_url") or ""
+        status = probe_worker_device_status(str(worker), timeout=timeout)
+        seat.update(status)
+        if seat.get("provider"):
+            # Cloud: readiness is still meaningful after lease/bind.
+            pass
+        else:
+            physical_total += 1
+            if status.get("device_ready"):
+                physical_ready += 1
+    return {
+        "physical_total": physical_total,
+        "physical_ready": physical_ready,
+    }
+
+
 def pick_free_physical_seat(
     slots: list, *, prefer_unbound: bool = True
 ) -> PhysicalSlot | None:

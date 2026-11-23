@@ -89,9 +89,9 @@ Base: `/v1` · Auth: `Authorization: Bearer $COMPUTER_API_TOKEN` (optional if to
 | `GET` | `/v1/recordings` | List journals (`job_id` / `kind` / `limit`); survives park/recycle |
 | `GET` | `/v1/recordings/{id}` | Manifest (meta + events; frame paths, not base64) |
 | `GET` | `/v1/recordings/{id}/frames/{name}` | Raw PNG frame |
-| `GET` | `/v1/seats` | Per-worker inventory (`kind` + `free`/`leased`/`parked` + `session_id`/`vnc_url`/`job_id`) |
+| `GET` | `/v1/seats` | Per-worker inventory (`kind` + state + `session_id`/`vnc_url`/`job_id`); phone seats add live `device_ready` / `device_state` / `device_serial` by default (`?device_status=0` to skip) + `physical_phones` summary |
 | `GET` | `/v1/seats/{id}/devices` | Phone: adb devices visible to the seat |
-| `GET` | `/v1/seats/{id}/device` | Phone: current bind + selected device |
+| `GET` | `/v1/seats/{id}/device` | Phone: current bind + selected device — **preflight** before pinning a physical lease (`selected.state` should be `device`) |
 | `POST` | `/v1/devices/register` | Phone (physical): pick free unbound seat (or `seat_id`) + bind; if none and `PHONE_WARM_SPAWN_MAX>0`, spawn warm reserved worker; returns `seat_id` for lease pin |
 | `POST` | `/v1/devices/unregister` | Phone (physical): destroy a **warm-spawned** seat (unbind + factory destroy); inventory seats use `/unbind` only |
 | `POST` | `/v1/seats/{id}/pair` | Phone (physical): wireless debugging `adb pair` (`connect` pairing host:port + `code`) — then `/bind`; refused while leased or on cloud seats |

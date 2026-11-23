@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
+import physical_phone_seats
 import providers  # noqa: F401 — registers CloudPhoneProvider impls (phone-harness, …)
 from inventory import SeatKind, load_workers
 from pool import SeatPinError, SessionPool
@@ -330,10 +331,25 @@ def health():
 
 
 @app.get("/v1/seats", tags=["ops"])
-def list_seats(ctx: TenantDep):
-    """Per-worker inventory: state, session_id, vnc_url, job_id (for Desk inspect/recycle)."""
+def list_seats(
+    ctx: TenantDep,
+    device_status: Annotated[
+        bool,
+        Query(
+            description=(
+                "If true, probe each phone seat's /device and add device_ready / "
+                "device_state / device_serial (live adb). Default true."
+            ),
+        ),
+    ] = True,
+):
+    """Per-worker inventory: state, session_id, vnc_url, job_id (for Desk inspect/recycle).
+
+    Phone seats include bound_serial. With device_status=1 (default), also live
+    device_ready — use GET /v1/seats/{id}/device for a single-seat preflight.
+    """
     seats = filter_seats(ctx, pool.list_seats())
-    return {
+    body: dict = {
         "ok": True,
         "workers": pool.worker_count,
         "free": pool.free_count(),
@@ -341,6 +357,18 @@ def list_seats(ctx: TenantDep):
         "parked": pool.parked_count(),
         "seats": seats,
     }
+    if device_status:
+        summary = physical_phone_seats.enrich_seats_device_status(seats)
+        body["physical_phones"] = summary
+        # Hydrate gateway bound_serial from live probe when present.
+        for seat in seats:
+            if seat.get("kind") != "phone":
+                continue
+            serial = seat.get("device_serial")
+            if serial and seat.get("device_ready"):
+                pool.set_seat_bound_serial(str(seat["id"]), str(serial))
+                seat["bound_serial"] = serial
+    return body
 
 
 class SeatBindBody(BaseModel):
@@ -400,7 +428,11 @@ def seat_devices(seat_id: str, ctx: TenantDep):
 
 @app.get("/v1/seats/{seat_id}/device", tags=["ops"])
 def seat_device(seat_id: str, ctx: TenantDep):
-    """Current bind status for a phone seat."""
+    """Current bind status for a phone seat (authoritative physical preflight).
+
+    Prefer this before leasing a pinned physical seat: selected.state should be
+    'device'. For a fleet glance, GET /v1/seats?device_status=1.
+    """
     _require_seat_access(ctx, seat_id)
     slot = pool.get_seat(seat_id)
     if not slot:

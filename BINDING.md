@@ -185,6 +185,10 @@ Compose mounts host `~/.android` into `phone-1` and `scrcpy-web`. The human taps
 
 ```bash
 SEAT=phone1   # id from GET /v1/seats
+# Fleet glance: which physical seats have a live handset?
+curl -s -H "$AUTH" "$GW/v1/seats" | jq '{physical_phones, seats: [.seats[] | select(.kind=="phone") | {id, device_ready, device_state, bound_serial}]}'
+# Single-seat preflight before lease pin:
+curl -s -H "$AUTH" "$GW/v1/seats/$SEAT/device" | jq '{bound_serial, selected}'
 curl -s -H "$AUTH" "$GW/v1/seats/$SEAT/devices" | jq .
 
 # Wireless debugging (first time on this host's keys):
