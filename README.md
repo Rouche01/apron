@@ -53,6 +53,7 @@ Default inventory is two warm desktop seats (`gateway/workers.json`).
 
 Tool shapes and curl / TypeScript / Python examples: **[BINDING.md](BINDING.md)**  
 Typed client: [`packages/client`](packages/client) (`@useapron/client`) — optional; curl stays enough for the golden path  
+Seat loop: [`packages/seat`](packages/seat) (`@useapron/seat`) — observe → decide → act on top of the client  
 OpenAI / Anthropic-style JSON: [`schemas/`](schemas/)  
 Public HTTP contract (auth, lease/park/recycle, **503**, freeze notes): **[docs/v1.md](docs/v1.md)**
 

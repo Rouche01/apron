@@ -4,7 +4,7 @@ Inference stays **outside** this project. Your agent leases a seat, loops (scree
 
 Stable gateway paths, status codes, and compatibility freeze: **[docs/v1.md](docs/v1.md)**.
 
-Bind with **curl** (below), raw HTTP, or the typed TypeScript client [`@useapron/client`](packages/client) (§6). Curl alone is enough for the OSS golden path.
+Bind with **curl** (below), raw HTTP, [`@useapron/client`](packages/client) (§6), or the seat loop [`@useapron/seat`](packages/seat) (§7). Curl alone is enough for the OSS golden path.
 
 Default display (desktop): **1280×800**. Gateway: `http://localhost:9000` (Compose).
 
@@ -14,7 +14,7 @@ Seat **kind** (inventory JSON via `WORKER_INVENTORY_PATH`): `desktop` (default) 
 
 **Register physical (ops):** `POST /v1/devices/register` with `{"connect":"ip:5555"}` (or `serial`) binds the first free unbound physical seat and returns `{seat_id, bound_serial, vnc_url}` for the agent pin. Optional `"seat_id"` rebinds that seat. If none are free and `PHONE_WARM_SPAWN_MAX>0` with `SEAT_BURST_BACKEND=k3s`, spawns a **warm reserved** phone worker (`warm_spawned`, survives recycle) then binds. Tear down with `POST /v1/devices/unregister` `{"seat_id":"phone-warm-…"}` (inventory seats: `/v1/seats/{id}/unbind` only).
 
-**Relay OS:** can bind with HTTP or `@useapron/client` (this repo). Migration from workspace `@relay/engines-computer`: [`.cursor/plans/ts_client_sdk.plan.md`](.cursor/plans/ts_client_sdk.plan.md). Policy packs / Desk notes: **Relay OS → Downstream bind notes** in [`AGENTS.md`](AGENTS.md).
+**Relay OS:** can bind with HTTP, `@useapron/client`, or `@useapron/seat` (this repo). Client migration: [`.cursor/plans/ts_client_sdk.plan.md`](.cursor/plans/ts_client_sdk.plan.md); seat loop: [`.cursor/plans/seat_loop_sdk.plan.md`](.cursor/plans/seat_loop_sdk.plan.md). Policy packs / Desk notes: **Relay OS → Downstream bind notes** in [`AGENTS.md`](AGENTS.md).
 
 ## Lease vs park vs recycle
 
@@ -329,7 +329,59 @@ try {
 
 Phone: `params: { kind: "phone" }` on lease, or `claimPhoneSeat(engine)`. Desktop helpers: `ComputerTaskRunner` + `navigateToUrl` / builtins. Package README: [`packages/client/README.md`](packages/client/README.md).
 
-## 7. Minimal Python bind
+## 7. Seat loop (`@useapron/seat`)
+
+Higher-level **observe → decide → act** chassis on top of `@useapron/client`. Still **no LLM inside** — you inject `decide` (vision model, heuristics, or a stub).
+
+| Layer | Package | Role |
+|-------|---------|------|
+| HTTP | `@useapron/client` | lease / screenshot / observe / action / park |
+| Loop | `@useapron/seat` | timing, stuck guards, `runSeatPolicyLoop` |
+| Brain | your code | `SeatDecider` + prompts (BYO) |
+
+```bash
+npm install @useapron/client @useapron/seat
+```
+
+```ts
+import { ComputerEngine } from "@useapron/client";
+import {
+  captureScreenshotObservation,
+  defaultSeatTiming,
+  runSeatPolicyLoop,
+  type SeatDecideInput,
+  type SeatDecision,
+} from "@useapron/seat";
+
+const engine = new ComputerEngine({
+  baseUrl: process.env.COMPUTER_GATEWAY_URL ?? "http://localhost:9000",
+  token: process.env.COMPUTER_API_TOKEN,
+});
+
+async function decide(input: SeatDecideInput): Promise<SeatDecision> {
+  // … send input.observation.imageBase64 to your vision model …
+  // return { kind: "act", action: { type: "click", x: 100, y: 200 } };
+  if (input.iteration >= input.maxIterations) {
+    return { kind: "done", reason: "max steps" };
+  }
+  return { kind: "done", reason: "stub" };
+}
+
+const result = await runSeatPolicyLoop(engine, {
+  goal: { text: "Find the pricing page" },
+  timing: defaultSeatTiming({ exitRateMu: 0 }),
+  maxIterations: 12,
+  decide: { decide },
+  captureObservation: ({ iteration }) =>
+    captureScreenshotObservation(engine, iteration),
+  // Soft park when finished (default). Wipe with recycle: true.
+});
+console.log(result.stoppedReason, result.steps.length, result.vncUrl);
+```
+
+Phone: `leaseKind: "phone"` and `captureObserveObservation(engine, iteration)`. Optional stuck guards: `maxSameActionStreak`, `maxSameScreenStreak`. Package README: [`packages/seat/README.md`](packages/seat/README.md).
+
+## 8. Minimal Python bind
 
 ```python
 import os, httpx
@@ -357,7 +409,7 @@ with httpx.Client(base_url=GW, headers=H, timeout=60) as c:
         c.delete(f"/v1/sessions/{sid}", params={"recycle": "true"})
 ```
 
-## 8. Minimal fetch bind
+## 9. Minimal fetch bind
 
 ```js
 const GW = process.env.GW ?? "http://localhost:9000";
@@ -388,7 +440,7 @@ try {
 }
 ```
 
-## 9. Ops tips
+## 10. Ops tips
 
 - Prefer `lease.api_base` from the lease response as the session prefix.
 - Send `X-Job-Id` (or body `job_id`) so serial steps can reattach and logs correlate.
