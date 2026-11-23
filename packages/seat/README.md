@@ -93,3 +93,32 @@ npm install
 npm test
 npm run build
 ```
+
+## Release (CI)
+
+Publishes from GitHub Actions on a version tag via **npm Trusted Publisher** (OIDC) — no long-lived `NPM_TOKEN`. Not on every `main` push.
+
+### One-time npm setup
+
+On [npm package settings](https://www.npmjs.com/package/@useapron/seat) → **Trusted Publisher** → GitHub Actions (create the empty scoped package under `useapron` first if needed):
+
+| Field | Value |
+|-------|--------|
+| Organization or user | `Rouche01` |
+| Repository | `computer-with-agent` |
+| Workflow filename | `publish-seat.yml` (filename only) |
+
+Allow direct `npm publish` if the UI offers staged-only vs publish.
+
+### Each release
+
+1. Bump `"version"` in `package.json` (currently `0.1.0`)
+2. Merge to the default branch
+3. Tag and push (must match the version):
+
+```bash
+git tag seat-v0.1.0
+git push origin seat-v0.1.0
+```
+
+Workflow: [`.github/workflows/publish-seat.yml`](../../.github/workflows/publish-seat.yml).
