@@ -1,0 +1,53 @@
+{
+  "name": "@useapron/seat",
+  "version": "0.1.0",
+  "description": "Seat policy loop (observe → decide → act) on top of @useapron/client",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json -w",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist dist-test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@useapron/client": "^0.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "~5.8.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rouche01/computer-with-agent.git",
+    "directory": "packages/seat"
+  },
+  "keywords": [
+    "useapron",
+    "computer-use",
+    "agent",
+    "seat",
+    "loop",
+    "desktop",
+    "phone"
+  ]
+}
