@@ -6,17 +6,25 @@ Typed HTTP client for the [Computer Runtime](../..) gateway: lease / screenshot 
 - **Inference:** out of scope — bring your own model/agent loop
 - **Deps:** none on `@relay/*`; Node 18+ `fetch` (injectable)
 
-## Status
+## Quick use
 
-Scaffold only. `ComputerEngine` and related APIs are ported next from relay-os `@relay/engines-computer` (protocol-free).
+```ts
+import { ComputerEngine } from "@computer-with-agent/client";
 
-## Install (when published)
+const engine = new ComputerEngine({
+  baseUrl: process.env.COMPUTER_GATEWAY_URL!,
+  token: process.env.COMPUTER_API_TOKEN,
+});
 
-```bash
-npm install @computer-with-agent/client
+await engine.execute({ type: "lease", params: {} });
+const shot = await engine.execute({ type: "screenshot", params: {} });
+await engine.execute({ type: "release", params: {} }); // soft park
+// or: await engine.execute({ type: "recycle", params: {} });
 ```
 
-Until publish, develop from this repo:
+Phone: `params: { kind: "phone" }` on lease, or `claimPhoneSeat(engine)`. Desktop helpers: `ComputerTaskRunner` + `open_url` / `capture_frame` / `tour_urls`.
+
+## Develop
 
 ```bash
 cd packages/client && npm install && npm run build
