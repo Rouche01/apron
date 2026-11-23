@@ -14,3 +14,6 @@ gateway/tenants.json
 kubeconfig
 *.kubeconfig
 .DS_Store
+node_modules/
+packages/*/dist/
+packages/*/node_modules/

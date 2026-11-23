@@ -1,0 +1,48 @@
+{
+  "name": "@computer-with-agent/client",
+  "version": "0.1.0",
+  "description": "Typed HTTP client for the Computer Runtime gateway (/v1)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json -w",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "~5.8.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rouche01/computer-with-agent.git",
+    "directory": "packages/client"
+  },
+  "keywords": [
+    "computer-use",
+    "agent",
+    "gateway",
+    "desktop",
+    "phone"
+  ]
+}
