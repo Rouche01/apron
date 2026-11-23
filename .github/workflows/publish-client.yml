@@ -1,0 +1,74 @@
+# Publish @useapron/client via npm Trusted Publisher (OIDC) — no NPM_TOKEN.
+# Tag form: client-v0.1.1  (must equal packages/client/package.json "version")
+#
+# Setup (once) on https://www.npmjs.com/package/@useapron/client → Settings → Trusted Publisher:
+#   - Publisher: GitHub Actions
+#   - Organization or user: Rouche01
+#   - Repository: computer-with-agent
+#   - Workflow filename: publish-client.yml   (filename only, not path)
+#   - Allow npm publish (not only staged) if prompted
+#
+# Requires: npm CLI ≥ 11.5.1, Node ≥ 22.14, GitHub-hosted runner.
+#
+# Release:
+#   1. Bump version in packages/client/package.json
+#   2. Merge to default branch
+#   3. git tag client-vX.Y.Z && git push origin client-vX.Y.Z
+
+name: Publish client
+
+on:
+  push:
+    tags:
+      - "client-v*"
+
+permissions:
+  contents: read
+  id-token: write # OIDC for npm trusted publishing
+
+jobs:
+  publish:
+    name: npm publish @useapron/client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/client
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Trusted publishing needs Node ≥ 22.14; pin a current 22.x
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      # Bundled npm on some images is too old for OIDC publish
+      - name: Ensure npm ≥ 11.5.1
+        run: npm install -g npm@latest
+
+      - name: Install
+        run: npm ci
+
+      - name: Tag matches package.json version
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          EXPECTED="${TAG#client-v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$EXPECTED" != "$PKG" ]; then
+            echo "Tag version '$EXPECTED' != package.json version '$PKG'"
+            exit 1
+          fi
+          echo "Publishing @useapron/client@$PKG (tag $TAG)"
+          npm --version
+          node --version
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # OIDC auth; provenance attestations are automatic with trusted publishing
+      - name: Publish
+        run: npm publish --access public

@@ -98,4 +98,42 @@ npm test
 npm run build
 ```
 
+## Release (CI)
+
+Publishes from GitHub Actions on a version tag via **npm Trusted Publisher** (OIDC) — no long-lived `NPM_TOKEN`. Not on every `main` push.
+
+### One-time npm setup
+
+On [npm package settings](https://www.npmjs.com/package/@useapron/client) → **Trusted Publisher** → GitHub Actions:
+
+| Field | Value |
+|-------|--------|
+| Organization or user | `Rouche01` |
+| Repository | `computer-with-agent` |
+| Workflow filename | `publish-client.yml` (filename only) |
+
+Allow direct `npm publish` if the UI offers staged-only vs publish.
+
+### Each release
+
+1. Bump `"version"` in `package.json` (e.g. `0.1.1`)
+2. Merge to the default branch
+3. Tag and push (must match the version):
+
+```bash
+git tag client-v0.1.1
+git push origin client-v0.1.1
+```
+
+Workflow: [`.github/workflows/publish-client.yml`](../../.github/workflows/publish-client.yml).
+
+Semver: bump **major** when guaranteed [`docs/v1.md`](../../docs/v1.md) behavior breaks; otherwise patch/minor as usual. Client `0.1.x` tracks OpenAPI **0.3.x**.
+
+Optional one-time cleanup of the org placeholder:
+
+```bash
+npm deprecate @useapron/client@0.0.0-stage "Use @useapron/client@0.1.0 or later"
+```
+
+
 Curl-only bind (no npm): [BINDING.md](../../BINDING.md) §2.
