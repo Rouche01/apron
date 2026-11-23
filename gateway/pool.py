@@ -875,6 +875,18 @@ class SessionPool:
             self, seat_id, serial=serial, connect=connect, unlock=unlock
         )
 
+    def pair_phone_seat(
+        self,
+        seat_id: str,
+        *,
+        connect: str,
+        code: str,
+    ) -> tuple[int, dict[str, Any]]:
+        """Wireless debugging pair (adb pair) on the phone worker — does not bind."""
+        return physical_phone_seats.pair_phone_seat(
+            self, seat_id, connect=connect, code=code
+        )
+
     def unbind_phone_seat(self, seat_id: str) -> tuple[int, dict[str, Any]]:
         return physical_phone_seats.unbind_phone_seat(self, seat_id)
 

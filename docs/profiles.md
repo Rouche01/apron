@@ -23,9 +23,12 @@ Set inventory with `WORKER_INVENTORY_FILE` in `.env` (Compose mounts that host f
 ## Cloud phone
 
 1. `PHONE_HARNESS_API_KEY` (or your registered `CloudPhoneProvider`) in `.env`.
-2. Profile `phone-cloud` + cloud inventory → up.
-3. `POST /v1/sessions` with `{"kind":"phone"}` provisions + binds; `vnc_url` is the vendor watch URL.
-4. **Recycle** (or parked idle) tears down the vendor session — soft park keeps billing running.
+2. Ensure `apron-phone:local` exists (shared with the physical seat image). Cloud-only first time:
+   `docker compose --profile phone build phone-1`
+   (or already have the image from a prior `phone` profile build).
+3. Profile `phone-cloud` + cloud inventory → up.
+4. `POST /v1/sessions` with `{"kind":"phone"}` provisions + binds; `vnc_url` is the vendor watch URL.
+5. **Recycle** (or parked idle) tears down the vendor session — soft park keeps billing running.
 
 ## Burst (k3s)
 

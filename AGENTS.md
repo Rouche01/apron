@@ -94,6 +94,7 @@ Base: `/v1` · Auth: `Authorization: Bearer $COMPUTER_API_TOKEN` (optional if to
 | `GET` | `/v1/seats/{id}/device` | Phone: current bind + selected device |
 | `POST` | `/v1/devices/register` | Phone (physical): pick free unbound seat (or `seat_id`) + bind; if none and `PHONE_WARM_SPAWN_MAX>0`, spawn warm reserved worker; returns `seat_id` for lease pin |
 | `POST` | `/v1/devices/unregister` | Phone (physical): destroy a **warm-spawned** seat (unbind + factory destroy); inventory seats use `/unbind` only |
+| `POST` | `/v1/seats/{id}/pair` | Phone (physical): wireless debugging `adb pair` (`connect` pairing host:port + `code`) — then `/bind`; refused while leased or on cloud seats |
 | `POST` | `/v1/seats/{id}/bind` | Phone (physical): runtime bind (`serial` / `connect` / optional `unlock`) — refused while leased or on cloud seats |
 | `POST` | `/v1/seats/{id}/unbind` | Phone (physical): clear runtime bind — refused on cloud seats |
 | `GET` | `/health` · `/ready` | Ops aggregates |
@@ -102,7 +103,7 @@ Worker (internal): `GET /health`, `GET /screenshot`, `POST /action`, `POST /sess
 
 Phone worker env: `ADB_SERIAL` (required if multiple devices), `ADB_CONNECT` (optional `host:port`), `ALLOW_EMPTY_DEVICE` (cloud worker: healthy before bind), `RESET_FORCE_STOP_PACKAGES` / `RECYCLE_CLEAR_PACKAGES` (comma package lists). Soft park → force-stop; recycle / idle wipe → `pm clear`.
 
-Compose `phone-1` + `scrcpy-web` share the bridge network and host `~/.android`. **First-time Allow:** on the phone, enable Wireless debugging (or USB), then from the Compose host run `adb connect ip:5555` and tap **Allow** / **Authorize this computer** when prompted — the same `~/.android` keys are mounted into both containers. After that you can rebind without recreating services: `POST /v1/seats/{id}/bind` with `{"connect":"ip:5555"}` (or `{"serial":"…"}` for USB). Boot env `ADB_SERIAL`/`ADB_CONNECT` is the default bind; runtime bind updates Watch `vnc_url` with `?udid=`. Inventory `vnc_url` points at scrcpy-web (`http://localhost:6083/watch.html`). Watch is **read-only**; drive the device via gateway `POST …/action` or the physical phone.
+Compose `phone-1` + `scrcpy-web` share the bridge network and host `~/.android`. **First-time wireless trust:** phone → Pair device with pairing code → `POST /v1/seats/{id}/pair` with that host:port + code (runs `adb pair` inside `phone-1` with the mounted keys), then `POST /v1/seats/{id}/bind` with the main Wireless debugging IP & port. USB: tap **Allow** once, then bind with `{"serial":"…"}`. Boot env `ADB_SERIAL`/`ADB_CONNECT` is an optional default; runtime bind updates Watch `vnc_url` with `?udid=`. Inventory `vnc_url` points at scrcpy-web (`http://localhost:6083/watch.html`). Watch is **read-only**; drive the device via gateway `POST …/action` or the physical phone.
 
 ### Cloud phone seats (`CloudPhoneProvider`)
 

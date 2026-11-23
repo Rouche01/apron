@@ -113,6 +113,14 @@ class PhysicalSeatHost(Protocol):
         unlock: str | None = None,
     ) -> tuple[int, dict[str, Any]]: ...
 
+    def pair_phone_seat(
+        self,
+        seat_id: str,
+        *,
+        connect: str,
+        code: str,
+    ) -> tuple[int, dict[str, Any]]: ...
+
     def unbind_phone_seat(self, seat_id: str) -> tuple[int, dict[str, Any]]: ...
 
     def unregister_physical_device(
@@ -367,6 +375,97 @@ def unregister_physical_device(
     }
 
 
+def _physical_phone_seat_or_error(
+    host: PhysicalSeatHost, seat_id: str, *, action: str
+) -> tuple[PhysicalSlot | None, tuple[int, dict[str, Any]] | None]:
+    """Resolve a free-to-mutate physical phone seat; return (slot, None) or (None, error)."""
+    host._park_expired_leases_locked(_utcnow())
+    slot = host._find_seat_locked(seat_id)
+    if not slot:
+        return None, (404, {"ok": False, "detail": "seat not found"})
+    if slot.kind != "phone":
+        return None, (
+            400,
+            {"ok": False, "detail": f"only phone seats support device {action}"},
+        )
+    if slot.provider:
+        return None, (
+            400,
+            {
+                "ok": False,
+                "detail": (
+                    "cloud seats are bound by the provider on lease — "
+                    f"manual {action} refused (provider={slot.provider})"
+                ),
+                "provider": slot.provider,
+            },
+        )
+    if slot.state == "leased":
+        return None, (
+            409,
+            {
+                "ok": False,
+                "detail": f"seat is leased — release or recycle before {action}",
+                "session_id": slot.session_id,
+            },
+        )
+    return slot, None
+
+
+def pair_phone_seat(
+    host: PhysicalSeatHost,
+    seat_id: str,
+    *,
+    connect: str,
+    code: str,
+) -> tuple[int, dict[str, Any]]:
+    """Wireless debugging pair on the phone worker (adb pair) — does not bind."""
+    connect = (connect or "").strip()
+    code = (code or "").strip()
+    if not connect or not code:
+        return 400, {"ok": False, "detail": "connect and code required"}
+
+    with host._lock:
+        slot, err = _physical_phone_seat_or_error(host, seat_id, action="pair")
+        if err:
+            return err
+        assert slot is not None
+        worker_url = slot.base_url
+
+    body = {"connect": connect, "code": code}
+    with httpx.Client(timeout=host._timeout) as client:
+        try:
+            r = client.post(f"{worker_url}/device/pair", json=body)
+            try:
+                data = r.json()
+            except Exception:
+                data = {"detail": r.text}
+        except httpx.HTTPError as e:
+            return 503, {"ok": False, "detail": f"phone worker unreachable: {e}"}
+
+    if r.status_code >= 400:
+        detail = data if isinstance(data, dict) else {"detail": data}
+        if isinstance(detail, dict) and "ok" not in detail:
+            detail = {"ok": False, **detail}
+        return r.status_code, detail  # type: ignore[return-value]
+
+    out: dict[str, Any] = {
+        "ok": bool(isinstance(data, dict) and data.get("ok", True)),
+        "seat_id": seat_id,
+        "connect": connect,
+        "worker": data,
+        "hint": (
+            "paired — POST /v1/seats/{id}/bind with Wireless debugging "
+            "IP & port (not the pairing port)"
+        ),
+    }
+    if isinstance(data, dict) and data.get("pair_result"):
+        out["pair_result"] = data.get("pair_result")
+    if isinstance(data, dict) and data.get("hint"):
+        out["hint"] = data["hint"]
+    return 200 if out["ok"] else 503, out
+
+
 def bind_phone_seat(
     host: PhysicalSeatHost,
     seat_id: str,
@@ -377,27 +476,10 @@ def bind_phone_seat(
 ) -> tuple[int, dict[str, Any]]:
     """Bind a phone seat's worker (+ optional scrcpy-web) to a device."""
     with host._lock:
-        host._park_expired_leases_locked(_utcnow())
-        slot = host._find_seat_locked(seat_id)
-        if not slot:
-            return 404, {"ok": False, "detail": "seat not found"}
-        if slot.kind != "phone":
-            return 400, {"ok": False, "detail": "only phone seats support device bind"}
-        if slot.provider:
-            return 400, {
-                "ok": False,
-                "detail": (
-                    "cloud seats are bound by the provider on lease — "
-                    f"manual bind refused (provider={slot.provider})"
-                ),
-                "provider": slot.provider,
-            }
-        if slot.state == "leased":
-            return 409, {
-                "ok": False,
-                "detail": "seat is leased — release or recycle before rebinding",
-                "session_id": slot.session_id,
-            }
+        slot, err = _physical_phone_seat_or_error(host, seat_id, action="bind")
+        if err:
+            return err
+        assert slot is not None
         worker_url = slot.base_url
 
     body: dict[str, Any] = {}

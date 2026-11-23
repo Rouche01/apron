@@ -43,6 +43,42 @@ def set_bound_serial(serial: str | None) -> str | None:
     return _runtime_serial
 
 
+def adb_pair(hostport: str, code: str) -> str:
+    """Wireless debugging pair (Android 11+): trusts this worker's ~/.android keys.
+
+    Use the ephemeral IP:port + 6-digit code from the phone's
+    "Pair device with pairing code" sheet — not the main connect port.
+    After success, callers still need adb_connect / /device/bind on the
+    Wireless debugging IP & port.
+    """
+    target = hostport.strip()
+    pairing_code = code.strip()
+    if not target:
+        raise AdbError("pair target is empty")
+    if not pairing_code:
+        raise AdbError("pairing code is empty")
+    try:
+        r = subprocess.run(
+            ["adb", "pair", target, pairing_code],
+            check=False,
+            capture_output=True,
+            timeout=30,
+            text=True,
+        )
+    except FileNotFoundError as e:
+        raise AdbError("adb not found on PATH — install Android platform-tools") from e
+    except subprocess.TimeoutExpired as e:
+        raise AdbError(f"adb pair timed out: {target}") from e
+    out = ((r.stdout or "") + (r.stderr or "")).strip()
+    if r.returncode != 0 and "successfully paired" not in out.lower():
+        raise AdbError(
+            f"adb pair failed: {out or r.returncode}",
+            stderr=out,
+            returncode=r.returncode,
+        )
+    return out or f"Successfully paired to {target}"
+
+
 def adb_connect(hostport: str) -> str:
     """Wireless adb connect (host must already have authorized the device once)."""
     target = hostport.strip()

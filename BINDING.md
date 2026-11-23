@@ -184,13 +184,16 @@ Coordinates are **screenshot pixels** (device-reported size, e.g. 1080×2340). P
 Compose mounts host `~/.android` into `phone-1` and `scrcpy-web`. The human taps **Allow** / **Authorize this computer** once when that adb key first appears (USB or Wireless debugging). After that, Desk or curl can rebind without recreating containers. Bind is refused while the seat is **leased**, and refused entirely on **cloud** seats (`provider` set).
 
 ```bash
-# Optional: authorize on the host first (shows the Allow prompt on the phone)
-# adb connect 192.168.1.20:5555
-
 SEAT=phone1   # id from GET /v1/seats
 curl -s -H "$AUTH" "$GW/v1/seats/$SEAT/devices" | jq .
 
-# Wireless — connect + select (serial becomes ip:port)
+# Wireless debugging (first time on this host's keys):
+# Phone → Pair device with pairing code → use that host:port + 6-digit code
+curl -s -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"connect":"192.168.1.20:37123","code":"123456"}' \
+  "$GW/v1/seats/$SEAT/pair" | jq .
+
+# Then bind with the main Wireless debugging IP & port (not the pairing port)
 curl -s -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"connect":"192.168.1.20:5555"}' \
   "$GW/v1/seats/$SEAT/bind" | jq '{ok, bound_serial, vnc_url, hint}'
@@ -199,7 +202,7 @@ curl -s -H "$AUTH" -H 'Content-Type: application/json' \
 # curl -s -H "$AUTH" -H 'Content-Type: application/json' \
 #   -d '{"serial":"R5CY53CAB6N"}' "$GW/v1/seats/$SEAT/bind" | jq .
 
-# If ok=false / unauthorized: tap Allow on the phone, then retry bind.
+# If ok=false / unauthorized: pair again or tap Allow, then retry bind.
 # Lease vnc_url includes ?udid=… so Watch opens that device.
 ```
 

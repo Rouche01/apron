@@ -360,6 +360,17 @@ class SeatBindBody(BaseModel):
     )
 
 
+class SeatPairBody(BaseModel):
+    """Wireless debugging pair (adb pair) for a physical phone seat."""
+
+    connect: str = Field(
+        description="Pairing host:port from the phone's 'Pair device with pairing code' sheet",
+    )
+    code: str = Field(
+        description="6-digit wireless debugging pairing code",
+    )
+
+
 @app.get("/v1/seats/{seat_id}/devices", tags=["ops"])
 def seat_devices(seat_id: str, ctx: TenantDep):
     """List adb devices visible to a phone seat (Desk bind UI)."""
@@ -494,12 +505,32 @@ def devices_unregister(body: DeviceUnregisterBody, ctx: TenantDep):
     return data
 
 
+@app.post("/v1/seats/{seat_id}/pair", tags=["ops"])
+def seat_pair(seat_id: str, body: SeatPairBody, ctx: TenantDep):
+    """Wireless debugging pair (adb pair) using the phone worker's ~/.android keys.
+
+    Open "Pair device with pairing code" on the phone, pass that ephemeral
+    host:port + 6-digit code here, then POST /v1/seats/{id}/bind with the main
+    Wireless debugging IP & port. Refused on cloud seats and while leased.
+    """
+    _require_seat_access(ctx, seat_id)
+    status, data = pool.pair_phone_seat(
+        seat_id,
+        connect=(body.connect or "").strip(),
+        code=(body.code or "").strip(),
+    )
+    if status >= 400:
+        raise HTTPException(status_code=status, detail=data)
+    return data
+
+
 @app.post("/v1/seats/{seat_id}/bind", tags=["ops"])
 def seat_bind(seat_id: str, body: SeatBindBody, ctx: TenantDep):
     """Bind a phone seat to a device without recreating containers.
 
     Human must tap Allow / Authorize on the phone the first time this host's
     adb keys appear (Compose mounts ~/.android into phone-1 + scrcpy-web).
+    For Wireless debugging first trust, prefer POST /v1/seats/{id}/pair first.
     Refuses while the seat is leased. Prefer POST /v1/devices/register when
     Desk should pick a free seat and return seat_id for the agent pin.
     """

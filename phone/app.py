@@ -51,6 +51,13 @@ class BindBody(BaseModel):
     unlock: str | None = None  # optional vendor unlock after connect (e.g. Phone Harness)
 
 
+class PairBody(BaseModel):
+    """Wireless debugging pair (adb pair) using this worker's mounted ~/.android keys."""
+
+    connect: str  # pairing host:port from the phone UI
+    code: str  # 6-digit pairing code
+
+
 @app.get("/devices")
 def list_devices():
     """All transports adb currently sees (for Desk bind UI)."""
@@ -79,6 +86,29 @@ def device_status():
         "adb_serial_env": os.environ.get("ADB_SERIAL", "").strip() or None,
         "selected": selected,
         "devices": found,
+    }
+
+
+@app.post("/device/pair")
+def device_pair(body: PairBody):
+    """Wireless debugging pair — run before /device/bind when this host's keys are new.
+
+    Body.connect is the ephemeral pairing IP:port; body.code is the 6-digit code.
+    Does not select/bind a device; call /device/bind with the main connect port after.
+    """
+    connect = (body.connect or "").strip()
+    code = (body.code or "").strip()
+    if not connect or not code:
+        raise HTTPException(status_code=400, detail="connect and code required")
+    try:
+        pair_out = adbutil.adb_pair(connect, code)
+    except adbutil.AdbError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    return {
+        "ok": True,
+        "connect": connect,
+        "pair_result": pair_out,
+        "hint": "paired — POST /device/bind with Wireless debugging IP & port (not the pairing port)",
     }
 
 
@@ -117,7 +147,7 @@ def device_bind(body: BindBody):
     if not ready:
         hint = (
             "device not in 'device' state — authorize USB/wireless Allow on the phone, "
-            "or retry unlock for cloud ADB"
+            "or retry unlock for cloud ADB / POST /device/pair first"
         )
     elif unlock and unlock_out and "unlocked" not in unlock_out.lower():
         # Connected but unlock output unexpected — still report result.

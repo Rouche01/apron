@@ -9,73 +9,70 @@
 #   COMPOSE_PROFILES=phone-cloud \
 #     WORKER_INVENTORY_FILE=./gateway/workers.with-phone-cloud.json \
 #     docker compose up --build -d
+#   # cloud-only first image build (phone-cloud reuses apron-phone:local):
+#   docker compose --profile phone build phone-1
+
+name: apron
+
+x-desktop-worker: &desktop-worker
+  image: apron-worker:local
+  networks: [computer_internal]
+  environment:
+    ASPECT_RATIO: ${ASPECT_RATIO:-16:10}
+    WIDTH: ${WIDTH:-1280}
+    # Optional; entrypoint derives from ASPECT_RATIO × WIDTH when empty
+    HEIGHT: ${HEIGHT:-}
+  shm_size: "256mb"
+  healthcheck:
+    test:
+      [
+        "CMD",
+        "python3",
+        "-c",
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)",
+      ]
+    # Cold host reboot: X + x11vnc can take >45s
+    interval: 10s
+    timeout: 5s
+    retries: 18
+    start_period: 90s
+  restart: unless-stopped
+
+x-phone-healthcheck: &phone-healthcheck
+  test:
+    [
+      "CMD",
+      "python3",
+      "-c",
+      "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=3)",
+    ]
+  interval: 10s
+  timeout: 5s
+  retries: 12
 
 services:
   worker-1:
+    <<: *desktop-worker
     build:
       context: .
       dockerfile: Dockerfile
-    image: apron-worker:local
     hostname: worker-1
-    networks: [computer_internal]
     # noVNC for humans / HITL (control API stays internal-only)
     ports:
       - "6081:6080"
-    environment:
-      ASPECT_RATIO: ${ASPECT_RATIO:-16:10}
-      WIDTH: ${WIDTH:-1280}
-      # Optional override; if unset, entrypoint derives from ASPECT_RATIO × WIDTH
-      HEIGHT: ${HEIGHT:-}
-    shm_size: "256mb"
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python3",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)",
-        ]
-      # Cold host reboot: X + x11vnc can take >45s; keep start_period generous.
-      interval: 10s
-      timeout: 5s
-      retries: 18
-      start_period: 90s
-    restart: unless-stopped
 
-  # Same image as worker-1 — do not declare build here (BuildKit races on tag).
+  # Same image as worker-1 — no build here (BuildKit races on tag).
   worker-2:
-    image: apron-worker:local
+    <<: *desktop-worker
     hostname: worker-2
-    networks: [computer_internal]
     ports:
       - "6082:6080"
-    environment:
-      ASPECT_RATIO: ${ASPECT_RATIO:-16:10}
-      WIDTH: ${WIDTH:-1280}
-      HEIGHT: ${HEIGHT:-}
-    shm_size: "256mb"
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python3",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 18
-      start_period: 90s
-    restart: unless-stopped
 
-  # Third seat (kind=phone). Opt-in via profile so desktop-only deploys stay unchanged.
-  # Bridge network (same as gateway/workers) so gateway can call http://phone-1:8003.
-  # Prefer wireless ADB (ADB_CONNECT=ip:5555) — Docker Desktop Mac cannot share USB
-  # via network_mode:host, and host.docker.internal:8003 does not reach host-network
-  # containers on Mac. Mount ~/.android so the phone trusts this adb key.
+  # Physical phone seat. Opt-in via profile phone.
+  # Boot ADB_* optional; attach later via POST /v1/seats/{id}/bind or /devices/register.
   phone-1:
     profiles: ["phone"]
-    build: &apron-phone-build
+    build:
       context: .
       dockerfile: Dockerfile.phone
     image: apron-phone:local
@@ -87,39 +84,25 @@ services:
       HOME: /root
       ADB_SERIAL: ${ADB_SERIAL:-}
       ADB_CONNECT: ${ADB_CONNECT:-}
+      ALLOW_EMPTY_DEVICE: "1"
       RESET_FORCE_STOP_PACKAGES: ${RESET_FORCE_STOP_PACKAGES:-}
       RECYCLE_CLEAR_PACKAGES: ${RECYCLE_CLEAR_PACKAGES:-}
       SCRCPY_WEB_URL: ${PHONE_HITL_URL:-http://localhost:6083/watch.html}
     volumes:
-      # Same RSA keys the host used to authorize the phone (otherwise wireless = unauthorized).
+      # Host keys so the phone trusts this adb identity (Allow once).
       - ${HOME}/.android:/root/.android
-    # USB device access is host/OS-specific; wireless ADB needs only network + adb connect.
-    # devices:
-    #   - /dev/bus/usb
-    # privileged: true
     healthcheck:
-      test:
-        [
-          "CMD",
-          "python3",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=3)",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 12
+      <<: *phone-healthcheck
       start_period: 30s
     restart: unless-stopped
 
-  # Browser HITL for phone seats (lease vnc_url → :6083). Same ADB as phone-1.
-  # Watch-only for dogfood; intervene via gateway actions / physical device.
+  # Phone HITL Watch (lease vnc_url → :6083). Device may arrive later via bind API.
   scrcpy-web:
     profiles: ["phone"]
     build:
       context: .
       dockerfile: Dockerfile.scrcpy
       args:
-        # Mel0nFish/ws-scrcpy-enhanced @ scrcpy-server 3.3.4 (Android 16 video)
         WS_SCRCPY_REPO: ${WS_SCRCPY_REPO:-https://github.com/Mel0nFish/ws-scrcpy-enhanced.git}
         WS_SCRCPY_REF: ${WS_SCRCPY_REF:-32e58f9aa330bb30454d9fe31251c550008fc373}
     image: apron-scrcpy:local
@@ -135,7 +118,7 @@ services:
       - ${HOME}/.android:/root/.android
     depends_on:
       phone-1:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test:
         [
@@ -150,14 +133,9 @@ services:
       start_period: 45s
     restart: unless-stopped
 
-  # Cloud phone seat (kind=phone, provider=phone-harness). Bound on lease — no
-  # host ADB keys / scrcpy. Opt-in via profile phone-cloud.
-  # Same Dockerfile/image as phone-1 (no separate build helper — that showed as Exited in Docker Desktop).
-  # If both phone + phone-cloud profiles are on and BuildKit races on the tag, retry or:
-  #   docker compose --profile phone build phone-1 && docker compose up -d
+  # Cloud phone seat (provider=phone-harness). Reuses apron-phone:local from phone-1 build.
   phone-cloud-1:
     profiles: ["phone-cloud"]
-    build: *apron-phone-build
     image: apron-phone:local
     networks: [computer_internal]
     ports:
@@ -165,21 +143,11 @@ services:
     environment:
       PORT: "8003"
       HOME: /root
-      # Healthy before first lease (gateway provisions + bind).
       ALLOW_EMPTY_DEVICE: "1"
       RESET_FORCE_STOP_PACKAGES: ${RESET_FORCE_STOP_PACKAGES:-}
       RECYCLE_CLEAR_PACKAGES: ${RECYCLE_CLEAR_PACKAGES:-}
     healthcheck:
-      test:
-        [
-          "CMD",
-          "python3",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=3)",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 12
+      <<: *phone-healthcheck
       start_period: 20s
     restart: unless-stopped
 
@@ -200,14 +168,11 @@ services:
       REQUIRE_WORKER_INVENTORY: "1"
       SESSION_TTL_SEC: ${SESSION_TTL_SEC:-600}
       PARKED_TTL_SEC: ${PARKED_TTL_SEC:-1800}
-      # Phone profile: sync Watch adb when POST /v1/seats/{id}/bind (internal :8001).
       SCRCPY_ADB_API_URL: ${SCRCPY_ADB_API_URL:-http://scrcpy-web:8001}
-      # Cloud phone provider (profile phone-cloud / inventory provider=phone-harness).
       PHONE_HARNESS_API_KEY: ${PHONE_HARNESS_API_KEY:-}
       PHONE_HARNESS_API_BASE: ${PHONE_HARNESS_API_BASE:-https://api.phone-harness.com}
       PHONE_HARNESS_TIMEOUT_SEC: ${PHONE_HARNESS_TIMEOUT_SEC:-}
       PHONE_HARNESS_PROFILE_ID: ${PHONE_HARNESS_PROFILE_ID:-}
-      # Opt-in session recording journals (not video). Lease body record:true or default below.
       RECORDING_DIR: ${RECORDING_DIR:-/data/recordings}
       RECORDING_TTL_SEC: ${RECORDING_TTL_SEC:-604800}
       RECORD_SESSIONS_DEFAULT: ${RECORD_SESSIONS_DEFAULT:-0}
@@ -223,8 +188,6 @@ services:
       # TENANTS_PATH: /etc/computer/tenants.json
     volumes:
       # Host file must exist (missing path → Docker mounts an empty dir → gateway exits).
-      # Physical phone: WORKER_INVENTORY_FILE=./gateway/workers.with-phone.json
-      # Cloud / both: WORKER_INVENTORY_FILE=./gateway/workers.with-phone-cloud.json
       - ${WORKER_INVENTORY_FILE:-./gateway/workers.json}:/etc/computer/workers.json:ro
       - gateway_recordings:/data/recordings
       # Uncomment with TENANTS_PATH for multi-customer keys (see docs/hosted.md):
