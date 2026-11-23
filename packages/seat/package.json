@@ -21,8 +21,11 @@
     "build": "tsc -p tsconfig.build.json",
     "dev": "tsc -p tsconfig.build.json -w",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist dist-test"
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js",
+    "clean": "rm -rf dist dist-test",
+    "prepublishOnly": "npm run clean && npm test && npm run build"
   },
+
   "engines": {
     "node": ">=18"
   },
