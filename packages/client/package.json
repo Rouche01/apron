@@ -1,7 +1,7 @@
 {
   "name": "@useapron/client",
   "version": "0.1.2",
-  "description": "Typed HTTP client for the Computer Runtime gateway (/v1)",
+  "description": "Typed HTTP client for the Apron gateway (/v1)",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Computer Runtime — OpenAI-compatible function tools",
+  "title": "Apron — OpenAI-compatible function tools",
   "description": "Pass these as tools[].function (or Chat Completions tools) to any OpenAI-compatible model. Your agent must hold a leased session_id and map each call to the gateway HTTP API. Desktop default display 1280×800; phone uses device screenshot pixels (lease with kind=phone).",
   "session": {
     "lease": "POST /v1/sessions",

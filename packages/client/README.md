@@ -1,6 +1,6 @@
 # `@useapron/client`
 
-Typed HTTP client for the [Computer Runtime](../..) gateway: lease / screenshot / observe / action / park / recycle.
+Typed HTTP client for the [Apron](../..) gateway: lease / screenshot / observe / action / park / recycle.
 
 | | |
 |--|--|

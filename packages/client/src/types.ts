@@ -5,7 +5,7 @@ export interface ComputerResult {
   error?: string;
 }
 
-/** Body forwarded to Computer Runtime POST .../action (desktop + phone). */
+/** Body forwarded to Apron POST .../action (desktop + phone). */
 export interface ComputerActionPayload {
   type: string;
   x?: number;

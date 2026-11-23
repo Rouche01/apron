@@ -18,7 +18,7 @@ export KUBECONFIG=~/.kube/k3s.yaml
 kubectl apply -f deploy/k3s/namespace.yaml
 
 # Import the Compose-built desktop image into k3s containerd (local dogfood):
-docker save computer-with-agent-worker:local -o /tmp/worker.tar
+docker save apron-worker:local -o /tmp/worker.tar
 sudo k3s ctr images import /tmp/worker.tar
 ```
 
@@ -31,8 +31,8 @@ PHONE_BURST_MAX=1            # 0 = never spawn phone workers
 PHONE_BURST_PROVIDER=phone-harness
 KUBECONFIG=/path/to/k3s.yaml
 SEAT_BURST_NAMESPACE=computer-burst
-SEAT_BURST_DESKTOP_IMAGE=computer-with-agent-worker:local
-SEAT_BURST_PHONE_IMAGE=computer-with-agent-phone:local
+SEAT_BURST_DESKTOP_IMAGE=apron-worker:local
+SEAT_BURST_PHONE_IMAGE=apron-phone:local
 GATEWAY_BURST_VNC_BASE=http://localhost:30080   # public HITL origin you route to desktop Pods
 ```
 
@@ -41,7 +41,7 @@ Pool wiring is live: reserved seats are claimed first; when full and `*_BURST_MA
 Import phone image for phone burst:
 
 ```bash
-docker save computer-with-agent-phone:local -o /tmp/phone.tar
+docker save apron-phone:local -o /tmp/phone.tar
 sudo k3s ctr images import /tmp/phone.tar
 ```
 

@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for interest in Computer Runtime. Inference stays **outside** this project — contributions should keep the gateway and workers model-agnostic.
+Thanks for interest in Apron. Inference stays **outside** this project — contributions should keep the gateway and workers model-agnostic.
 
 ## Before you start
 

@@ -1,4 +1,4 @@
-"""Computer Runtime Gateway — model-agnostic session lease + observe/act proxy."""
+"""Apron Gateway — model-agnostic session lease + observe/act proxy."""
 
 from __future__ import annotations
 
@@ -125,7 +125,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="Computer Runtime Gateway",
+    title="Apron Gateway",
     version="0.3.0",
     description=(
         "Model-agnostic computer sessions (desktop or phone): lease a worker by kind, "

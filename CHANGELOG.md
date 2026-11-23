@@ -6,7 +6,7 @@
 
 ## [v0.1.0] — OSS launch
 
-First public-oriented tag of **Computer Runtime**.
+First public-oriented tag of **Apron** (formerly Computer Runtime).
 
 - Desktop Compose golden path (gateway + two warm seats)
 - Stable `/v1` lease / park / recycle / screenshot / action contract ([docs/v1.md](docs/v1.md))

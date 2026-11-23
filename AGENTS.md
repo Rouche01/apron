@@ -1,4 +1,4 @@
-# AGENTS.md — Computer Runtime
+# AGENTS.md — Apron
 
 Guidance for agents working in this repo. Inference stays **outside**; this project is a model-agnostic desktop control plane.
 
@@ -162,7 +162,8 @@ Plans: [`.cursor/plans/elastic_seats.plan.md`](.cursor/plans/elastic_seats.plan.
 | `SEAT_BURST_BACKEND` | `disabled` (default) or `k3s` — on-demand worker factory |
 | `DESKTOP_BURST_MAX` / `PHONE_BURST_MAX` | Max ephemeral seats beyond reserved (default `0`) |
 | `PHONE_BURST_PROVIDER` | Cloud provider id for phone burst seats (default `phone-harness`) |
-| `SEAT_BURST_PHONE_IMAGE` | k3s phone worker image (default `computer-with-agent-phone:local`) |
+| `SEAT_BURST_DESKTOP_IMAGE` | k3s desktop worker image (default `apron-worker:local`) |
+| `SEAT_BURST_PHONE_IMAGE` | k3s phone worker image (default `apron-phone:local`) |
 | `PHONE_WARM_SPAWN_MAX` | Max register-spawned reserved physical seats (default `0` = bind existing only) |
 | `KUBECONFIG` | kubeconfig for k3s burst (when backend is `k3s`) |
 
@@ -222,7 +223,7 @@ Agents can curl this gateway today. When Relay grows phone seats, keep inference
 | `@relay/browse-policy` (or phone system prompt) | Phone priors: swipe-heavy navigation, avoid desktop chords (`ctrl+l`), use `launch`/`uri` to open apps, `home`/`back` for system chrome. HITL **Watch** via lease `vnc_url` (scrcpy-web / `cu-phone.hsv`). |
 | Desk / Settings | `/v1/seats` exposes `kind`, `provider`, `ephemeral`, `warm_spawned`, `bound_serial`. Physical prep: `POST /v1/devices/register` → copy `seat_id` into the run; Watch via `vnc_url`. Cloud: omit `seat_id` on lease (no manual bind). |
 | Desk take-over (intervene) | **relay-os Desk** — when `need_human`, drive via gateway `POST …/action` (same control plane as the agent), not by injecting clicks into scrcpy-web. Physical phone OK for local dogfood. |
-| ThinkPad Caddy / `cu-phone.hsv` | **Deploy + Desk docs** (`relay-os/apps/relay-desk/LAPTOP.md`) — live Caddyfile Host route → `127.0.0.1:6083`. This repo documents the snippet and ships `workers.hsv.example.json`; applying Caddy on the host is not a computer-with-agent code change. |
+| ThinkPad Caddy / `cu-phone.hsv` | **Deploy + Desk docs** (`relay-os/apps/relay-desk/LAPTOP.md`) — live Caddyfile Host route → `127.0.0.1:6083`. This repo documents the snippet and ships `workers.hsv.example.json`; applying Caddy on the host is not an Apron code change. |
 | CommunityEngager | Stay **desktop evidence-only** unless an explicit phone transport is designed; do not silently lease `kind=phone` for Reddit. |
 
 Park/recycle semantics: phone park → soft force-stop (packages stay logged in); recycle → `pm clear` on configured packages — map Relay “job done” to recycle only when a clean app state is intended.

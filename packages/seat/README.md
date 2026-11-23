@@ -1,6 +1,6 @@
 # `@useapron/seat`
 
-Seat policy loop for Use Apron / Computer Runtime: lease → wait → observe → decide → act → park.
+Seat policy loop for Apron: lease → wait → observe → decide → act → park.
 
 | | |
 |--|--|

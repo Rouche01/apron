@@ -6,7 +6,7 @@ metadata:
   namespace: {{NAMESPACE}}
   labels:
     app.kubernetes.io/name: computer-desktop-burst
-    app.kubernetes.io/part-of: computer-with-agent
+    app.kubernetes.io/part-of: apron
     computer.burst/seat: "{{SEAT_ID}}"
     computer.burst/kind: desktop
 spec:

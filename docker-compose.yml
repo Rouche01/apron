@@ -1,4 +1,4 @@
-# Computer Runtime — default: gateway + 2 desktop workers (no Compose profile).
+# Apron — default: gateway + 2 desktop workers (no Compose profile).
 # Copy .env.example → .env, then:  docker compose up --build -d
 # Profiles / inventories: docs/profiles.md
 #
@@ -15,7 +15,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: computer-with-agent-worker:local
+    image: apron-worker:local
     hostname: worker-1
     networks: [computer_internal]
     # noVNC for humans / HITL (control API stays internal-only)
@@ -46,7 +46,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: computer-with-agent-worker:local
+    image: apron-worker:local
     hostname: worker-2
     networks: [computer_internal]
     ports:
@@ -80,7 +80,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.phone
-    image: computer-with-agent-phone:local
+    image: apron-phone:local
     networks: [computer_internal]
     ports:
       - "8003:8003"
@@ -124,7 +124,7 @@ services:
         # Mel0nFish/ws-scrcpy-enhanced @ scrcpy-server 3.3.4 (Android 16 video)
         WS_SCRCPY_REPO: ${WS_SCRCPY_REPO:-https://github.com/Mel0nFish/ws-scrcpy-enhanced.git}
         WS_SCRCPY_REF: ${WS_SCRCPY_REF:-32e58f9aa330bb30454d9fe31251c550008fc373}
-    image: computer-with-agent-scrcpy:local
+    image: apron-scrcpy:local
     networks: [computer_internal]
     ports:
       - "6083:8000"
@@ -159,7 +159,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.phone
-    image: computer-with-agent-phone:local
+    image: apron-phone:local
     networks: [computer_internal]
     ports:
       - "8004:8003"
@@ -188,7 +188,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.gateway
-    image: computer-with-agent-gateway:local
+    image: apron-gateway:local
     networks: [computer_internal]
     ports:
       - "9000:9000"

@@ -3,4 +3,4 @@ kind: Namespace
 metadata:
   name: computer-burst
   labels:
-    app.kubernetes.io/part-of: computer-with-agent
+    app.kubernetes.io/part-of: apron

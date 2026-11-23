@@ -1,5 +1,5 @@
 /**
- * `@useapron/client` — typed HTTP client for Computer Runtime `/v1`.
+ * `@useapron/client` — typed HTTP client for Apron `/v1`.
  *
  * Inference stays outside — this package only talks HTTP.
  */

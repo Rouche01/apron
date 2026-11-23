@@ -1,4 +1,4 @@
-# Binding any agent / model to the Computer Runtime
+# Binding any agent / model to Apron
 
 Inference stays **outside** this project. Your agent leases a seat, loops (screenshot → model → action), then soft-releases (or recycles when the job is done).
 

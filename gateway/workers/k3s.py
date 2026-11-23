@@ -64,14 +64,14 @@ class K3sWorkerFactory:
             image_desktop
             or os.environ.get(
                 "SEAT_BURST_DESKTOP_IMAGE",
-                "computer-with-agent-worker:local",
+                "apron-worker:local",
             )
         )
         self._image_phone = (
             image_phone
             or os.environ.get(
                 "SEAT_BURST_PHONE_IMAGE",
-                "computer-with-agent-phone:local",
+                "apron-phone:local",
             )
         )
         self._kubectl = kubectl or os.environ.get("KUBECTL", "kubectl")

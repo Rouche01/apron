@@ -33,7 +33,7 @@ export interface ComputerEngineOptions {
 }
 
 /**
- * Typed client for the Computer Runtime gateway.
+ * Typed client for the Apron gateway.
  *
  * Session lifecycle (gateway park model):
  * - `lease` — claim a free worker (`kind: "phone"` for phone seats; omit = desktop),
