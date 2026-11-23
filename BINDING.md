@@ -4,7 +4,7 @@ Inference stays **outside** this project. Your agent leases a seat, loops (scree
 
 Stable gateway paths, status codes, and compatibility freeze: **[docs/v1.md](docs/v1.md)**.
 
-Bind with **curl** (below), raw HTTP, or the typed TypeScript client [`@apron/client`](packages/client) (§6). Curl alone is enough for the OSS golden path.
+Bind with **curl** (below), raw HTTP, or the typed TypeScript client [`@useapron/client`](packages/client) (§6). Curl alone is enough for the OSS golden path.
 
 Default display (desktop): **1280×800**. Gateway: `http://localhost:9000` (Compose).
 
@@ -14,7 +14,7 @@ Seat **kind** (inventory JSON via `WORKER_INVENTORY_PATH`): `desktop` (default) 
 
 **Register physical (ops):** `POST /v1/devices/register` with `{"connect":"ip:5555"}` (or `serial`) binds the first free unbound physical seat and returns `{seat_id, bound_serial, vnc_url}` for the agent pin. Optional `"seat_id"` rebinds that seat. If none are free and `PHONE_WARM_SPAWN_MAX>0` with `SEAT_BURST_BACKEND=k3s`, spawns a **warm reserved** phone worker (`warm_spawned`, survives recycle) then binds. Tear down with `POST /v1/devices/unregister` `{"seat_id":"phone-warm-…"}` (inventory seats: `/v1/seats/{id}/unbind` only).
 
-**Relay OS:** can bind with HTTP or `@apron/client` (this repo). Migration from workspace `@relay/engines-computer`: [`.cursor/plans/ts_client_sdk.plan.md`](.cursor/plans/ts_client_sdk.plan.md). Policy packs / Desk notes: **Relay OS → Downstream bind notes** in [`AGENTS.md`](AGENTS.md).
+**Relay OS:** can bind with HTTP or `@useapron/client` (this repo). Migration from workspace `@relay/engines-computer`: [`.cursor/plans/ts_client_sdk.plan.md`](.cursor/plans/ts_client_sdk.plan.md). Policy packs / Desk notes: **Relay OS → Downstream bind notes** in [`AGENTS.md`](AGENTS.md).
 
 ## Lease vs park vs recycle
 
@@ -286,7 +286,7 @@ curl -s -H "$AUTH" -H 'Content-Type: application/json' \
   "$GW/v1/sessions/$SID/action"
 ```
 
-## 6. TypeScript client (`@apron/client`)
+## 6. TypeScript client (`@useapron/client`)
 
 Typed wrapper around the same `/v1` routes. **No LLM inside** — pass screenshots to your model, then `execute({ type: "action", … })`.
 
@@ -301,7 +301,7 @@ npm install ../computer-with-agent/packages/client
 ```
 
 ```ts
-import { ComputerEngine } from "@apron/client";
+import { ComputerEngine } from "@useapron/client";
 
 const engine = new ComputerEngine({
   baseUrl: process.env.COMPUTER_GATEWAY_URL ?? "http://localhost:9000",

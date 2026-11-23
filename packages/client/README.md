@@ -1,4 +1,4 @@
-# `@apron/client`
+# `@useapron/client`
 
 Typed HTTP client for the [Computer Runtime](../..) gateway: lease / screenshot / observe / action / park / recycle.
 
@@ -22,7 +22,7 @@ Bump the client **major** when guaranteed `/v1` behavior breaks (new API prefix 
 When published:
 
 ```bash
-npm install @apron/client
+npm install @useapron/client
 ```
 
 From a sibling checkout (pre-publish):
@@ -42,7 +42,7 @@ export COMPUTER_API_TOKEN=dev-token
 ## Desktop lease loop
 
 ```ts
-import { ComputerEngine } from "@apron/client";
+import { ComputerEngine } from "@useapron/client";
 
 const engine = new ComputerEngine({
   baseUrl: process.env.COMPUTER_GATEWAY_URL!,
@@ -80,7 +80,7 @@ await engine.execute({
   type: "lease",
   params: { kind: "phone", job_id: "phone-job" },
 });
-// or: import { claimPhoneSeat } from "@apron/client";
+// or: import { claimPhoneSeat } from "@useapron/client";
 // await claimPhoneSeat(engine);
 
 const obs = await engine.execute({
