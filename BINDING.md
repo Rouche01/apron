@@ -301,7 +301,7 @@ Compatibility: client **0.1.x** targets gateway OpenAPI **0.3.x** / [`docs/v1.md
 
 ```bash
 npm install @useapron/client
-# or from a sibling checkout: npm install ../computer-with-agent/packages/client
+# or from a sibling checkout: npm install ../apron/packages/client
 ```
 
 ```ts

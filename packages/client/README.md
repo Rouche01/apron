@@ -26,7 +26,7 @@ npm install @useapron/client
 From a sibling checkout (dev / unpublished changes):
 
 ```bash
-npm install ../computer-with-agent/packages/client
+npm install ../apron/packages/client
 # build once: cd …/packages/client && npm install && npm run build
 ```
 
@@ -109,7 +109,7 @@ On [npm package settings](https://www.npmjs.com/package/@useapron/client) → **
 | Field | Value |
 |-------|--------|
 | Organization or user | `Rouche01` |
-| Repository | `computer-with-agent` |
+| Repository | `apron` |
 | Workflow filename | `publish-client.yml` (filename only) |
 
 Allow direct `npm publish` if the UI offers staged-only vs publish.

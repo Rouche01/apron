@@ -4,7 +4,7 @@
 # Setup (once) on https://www.npmjs.com/package/@useapron/client → Settings → Trusted Publisher:
 #   - Publisher: GitHub Actions
 #   - Organization or user: Rouche01
-#   - Repository: computer-with-agent
+#   - Repository: apron
 #   - Workflow filename: publish-client.yml   (filename only, not path)
 #   - Allow npm publish (not only staged) if prompted
 #

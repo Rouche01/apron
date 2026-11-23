@@ -4,7 +4,7 @@
 
 Please **do not** file a public GitHub issue for security problems.
 
-**Preferred:** use [GitHub private vulnerability reporting](https://github.com/Rouche01/computer-with-agent/security/advisories/new) on this repository (Security → Advisories → Report a vulnerability), if enabled.
+**Preferred:** use [GitHub private vulnerability reporting](https://github.com/Rouche01/apron/security/advisories/new) on this repository (Security → Advisories → Report a vulnerability), if enabled.
 
 **Otherwise:** email **richardemate@gmail.com** with:
 

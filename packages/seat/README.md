@@ -28,7 +28,7 @@ npm install @useapron/client @useapron/seat
 From a sibling checkout (unpublished):
 
 ```bash
-npm install ../computer-with-agent/packages/client ../computer-with-agent/packages/seat
+npm install ../apron/packages/client ../apron/packages/seat
 ```
 
 ## Quick use (inject `decide`)
@@ -105,7 +105,7 @@ On [npm package settings](https://www.npmjs.com/package/@useapron/seat) → **Tr
 | Field | Value |
 |-------|--------|
 | Organization or user | `Rouche01` |
-| Repository | `computer-with-agent` |
+| Repository | `apron` |
 | Workflow filename | `publish-seat.yml` (filename only) |
 
 Allow direct `npm publish` if the UI offers staged-only vs publish.

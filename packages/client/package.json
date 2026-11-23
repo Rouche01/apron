@@ -41,7 +41,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Rouche01/computer-with-agent.git",
+    "url": "git+https://github.com/Rouche01/apron.git",
     "directory": "packages/client"
   },
   "keywords": [
