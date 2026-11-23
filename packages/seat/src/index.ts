@@ -1,8 +1,37 @@
 /**
  * `@useapron/seat` — observe → decide → act loop on `@useapron/client`.
  *
- * Implementation lands in the port-loop step (runSeatPolicyLoop, timing, stuck, …).
  * Inference stays outside — inject a SeatDecider.
  */
 
-export {};
+export type {
+  CaptureObservationResult,
+  SeatDecideInput,
+  SeatDecider,
+  SeatDecision,
+  SeatDecisionKind,
+  SeatGoalBase,
+  SeatLoopOptions,
+  SeatLoopResult,
+  SeatObservation,
+  SeatProgressGuardContext,
+  SeatProgressGuardResult,
+  SeatStepRecord,
+  SeatTimingConfig,
+  SeatWaitDistribution,
+} from "./types.js";
+
+export {
+  defaultSeatTiming,
+  sampleWaitMs,
+  shouldExit,
+} from "./timing.js";
+
+export {
+  captureObserveObservation,
+  captureScreenshotObservation,
+} from "./observe.js";
+
+export { actionFingerprint, defaultScreenSignature } from "./stuck.js";
+
+export { runSeatPolicyLoop } from "./loop.js";

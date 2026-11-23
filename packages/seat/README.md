@@ -1,6 +1,6 @@
 # `@useapron/seat`
 
-Seat policy loop for [Use Apron](../..) / Computer Runtime: lease → wait → observe → decide → act → park.
+Seat policy loop for Use Apron / Computer Runtime: lease → wait → observe → decide → act → park.
 
 | | |
 |--|--|
@@ -9,26 +9,45 @@ Seat policy loop for [Use Apron](../..) / Computer Runtime: lease → wait → o
 | **Contract** | [`docs/v1.md`](../../docs/v1.md) · [`BINDING.md`](../../BINDING.md) |
 | **License** | Apache-2.0 |
 
-## Status
-
-Scaffold only. `runSeatPolicyLoop` and related APIs are ported next from relay-os `@relay/computer-seat-policy`.
-
-## Install (when published)
+## Install
 
 ```bash
 npm install @useapron/seat
 ```
 
-Develop from this repo:
+## Quick use
+
+```ts
+import { ComputerEngine } from "@useapron/client";
+import {
+  captureScreenshotObservation,
+  defaultSeatTiming,
+  runSeatPolicyLoop,
+} from "@useapron/seat";
+
+const engine = new ComputerEngine({
+  baseUrl: process.env.COMPUTER_GATEWAY_URL!,
+  token: process.env.COMPUTER_API_TOKEN,
+});
+
+const result = await runSeatPolicyLoop(engine, {
+  goal: { text: "Open example.com and stop" },
+  timing: defaultSeatTiming({ exitRateMu: 0 }),
+  maxIterations: 10,
+  decide: {
+    async decide() {
+      return { kind: "done", reason: "stub" };
+    },
+  },
+  captureObservation: ({ iteration }) =>
+    captureScreenshotObservation(engine, iteration),
+});
+```
+
+Phone: `leaseKind: "phone"` + `captureObserveObservation`. Stuck guards: `maxSameActionStreak` / `maxSameScreenStreak`.
+
+## Develop
 
 ```bash
 cd packages/seat && npm install && npm run build
 ```
-
-## Layers
-
-| Package | Role |
-|---------|------|
-| `@useapron/client` | Gateway HTTP (lease / screenshot / action) |
-| `@useapron/seat` | Shared loop chassis (this package) |
-| Your agent / prompts | `decide()` — BYO model |
