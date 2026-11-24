@@ -151,6 +151,17 @@ curl -sf "$GW/v1/billing/plans" | python3 -m json.tool
 # GET $GW/v1/billing/checkout/{CHECKOUT_SESSION_ID}  → api_key once
 ```
 
+## Kill a tenant (abuse)
+
+Instant deny without waiting on Stripe:
+
+1. Set `"disabled": true` on the tenant in `tenants.json` (rw mount — gateway hot-reloads on next upsert/`reload`, or recreate gateway after a hand edit), **or**
+2. Set `ABUSE_DISABLED_TENANT_IDS=cus_…,other_id` and recreate gateway.
+
+Customer Bearer → **403** `tenant_disabled`. Ops token still works. Subscription cancel / webhook suspend also clears keys + seats and sets `disabled`.
+
+Rate-limit spikes: lower `ABUSE_RATE_LIMIT_*` or investigate; Watch bandwidth is Caddy/LB, not the gateway.
+
 ## Capacity playbook
 
 Hosted beta capacity = **reserved inventory** + **per-tenant caps**. Customers do not get lease-burst outside `seat_ids`. With Stripe billing, new signups **auto-claim** unused desktop seats into the new tenant’s allowlist — keep spare inventory ahead of demand.

@@ -161,6 +161,7 @@ Plans: [`.cursor/plans/elastic_seats.plan.md`](.cursor/plans/elastic_seats.plan.
 | `RECORDING_S3_*` | Bucket / prefix / endpoint / keys when backend is `s3` |
 | `TENANTS_PATH` | Optional tenants JSON (hosted soft isolation); unset = OSS single-token — [docs/hosted.md](docs/hosted.md) |
 | `STRIPE_SECRET_KEY` (+ webhook/prices/URLs) | Optional hosted billing; Checkout → webhook provisions tenant key + desktop seats — [docs/hosted.md](docs/hosted.md) Billing |
+| `ABUSE_RATE_LIMIT_*` / `ABUSE_DISABLED_TENANT_IDS` | Hosted rate limits + kill switch when tenancy on — [docs/hosted.md](docs/hosted.md) Abuse limits |
 | `SEAT_BURST_BACKEND` | `disabled` (default) or `k3s` — on-demand worker factory |
 | `DESKTOP_BURST_MAX` / `PHONE_BURST_MAX` | Max ephemeral seats beyond reserved (default `0`) |
 | `PHONE_BURST_PROVIDER` | Cloud provider id for phone burst seats (default `phone-harness`) |

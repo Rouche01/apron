@@ -180,6 +180,7 @@ Open signup for the paid hosted fleet. Same `/v1` lease API; keys land in `tenan
 | `BILLING_SUCCESS_URL` | Checkout return (include `{CHECKOUT_SESSION_ID}`) |
 | `BILLING_CANCEL_URL` | Checkout cancel |
 | `BILLING_PORTAL_RETURN_URL` | Customer Portal return (invoices / cancel) |
+| `BILLING_DEFAULT_RECORDING_BYTES` | Recording fair-use quota on provision (default **500 MiB**; `0` = unlimited) |
 | `TENANTS_PATH` | **Required** for billing — registry the webhook upserts |
 
 Mount `tenants.json` **read-write** (no `:ro`) so Checkout provision can persist tenants without recreating the gateway.
@@ -210,4 +211,24 @@ Grow workers + inventory before marketing a plan tier you cannot fulfill. Phone 
 - Metered seat-hour Stripe usage records (caps remain `max_concurrent_leases`)  
 - Phone seats in auto-claim  
 
-See [docs/v1.md](v1.md) for the shared `/v1` contract and [hosted-ops.md](hosted-ops.md) for deploy / alert / backup / webhook ops.
+## Abuse limits
+
+Active when **tenancy is on** (`TENANTS_PATH` set). OSS single-token mode is unchanged.
+
+| Control | Behavior |
+|---------|----------|
+| Rate limit | Per-tenant sliding window on authenticated `/v1/*` (**429** `rate_limited`). Screenshot / observe / action use a stricter bucket. |
+| Billing IP limit | Public `GET/POST /v1/billing/plans` + checkout + key reveal (not webhook). |
+| Kill switch | Tenant `"disabled": true` in `tenants.json`, or `ABUSE_DISABLED_TENANT_IDS` — **403** `tenant_disabled`. Ops Bearer (`COMPUTER_API_TOKEN`) is exempt. |
+| Recording fair-use | Stripe provision sets `max_recording_bytes` (see Billing); existing quota already refuses overage. |
+
+| Variable | Default | Role |
+|----------|---------|------|
+| `ABUSE_RATE_LIMIT_RPM` | `120` | General `/v1` per tenant (`0` = off) |
+| `ABUSE_RATE_LIMIT_OBSERVE_RPM` | `60` | Screenshot / observe / action |
+| `ABUSE_RATE_LIMIT_BILLING_RPM` | `20` | Public billing per client IP |
+| `ABUSE_DISABLED_TENANT_IDS` | (empty) | Comma-separated tenant ids to deny immediately |
+
+**Watch (noVNC / scrcpy):** the gateway does **not** proxy Watch bytes. Fair-use there is infra (Caddy/LB). Agent load is controlled via the observe/action rate limits above.
+
+See [docs/v1.md](v1.md) for the shared `/v1` contract and [hosted-ops.md](hosted-ops.md) for deploy / alert / backup / webhook / kill-switch ops.
