@@ -15,11 +15,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from billing import (
+    DEFAULT_RECORDING_BYTES,
     BillingDisabled,
     InsufficientSeats,
     StripeClient,
     WebhookSignatureError,
     claim_desktop_seats,
+    default_recording_bytes,
     generate_api_key,
     get_plan,
     list_plans,
@@ -142,6 +144,7 @@ def test_provision_and_suspend(tmp_path: Path):
     assert tenant.id == "cus_acme"
     assert tenant.plan == "starter"
     assert tenant.seat_ids == frozenset({"desk1"})
+    assert tenant.max_recording_bytes == DEFAULT_RECORDING_BYTES
     assert len(tenant.api_keys) == 1
     assert next(iter(tenant.api_keys)).startswith("cwa_")
     assert reg.authenticate_key(next(iter(tenant.api_keys))) is not None
@@ -261,6 +264,35 @@ def test_stripe_client_checkout_and_portal(monkeypatch: pytest.MonkeyPatch):
     got = stripe.retrieve_checkout_session("cs_123")
     assert got["customer"] == "cus_1"
     stripe.close()
+
+
+def test_default_recording_bytes_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("BILLING_DEFAULT_RECORDING_BYTES", raising=False)
+    assert default_recording_bytes() == DEFAULT_RECORDING_BYTES
+    monkeypatch.setenv("BILLING_DEFAULT_RECORDING_BYTES", "0")
+    assert default_recording_bytes() is None
+    monkeypatch.setenv("BILLING_DEFAULT_RECORDING_BYTES", "1024")
+    assert default_recording_bytes() == 1024
+
+
+def test_provision_respects_recording_quota_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("BILLING_DEFAULT_RECORDING_BYTES", "0")
+    path = tmp_path / "tenants.json"
+    path.write_text(json.dumps({"tenants": []}), encoding="utf-8")
+    reg = TenantRegistry.from_path(path)
+    tenant = provision_from_checkout_session(
+        {
+            "customer": "cus_unlim",
+            "subscription": "sub_u",
+            "customer_email": "u@example.com",
+            "metadata": {"plan": "starter"},
+        },
+        registry=reg,
+        seats_snapshot=[{"id": "desk1", "kind": "desktop", "state": "free"}],
+    )
+    assert tenant.max_recording_bytes is None
 
 
 def test_claim_uses_registry(tmp_path: Path):

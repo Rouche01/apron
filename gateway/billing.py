@@ -19,6 +19,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from parseutil import env_nonneg_int
 from tenancy import Tenant, TenantRegistry
 
 logger = logging.getLogger("computer.gateway.billing")
@@ -26,6 +27,8 @@ logger = logging.getLogger("computer.gateway.billing")
 STRIPE_API_BASE = "https://api.stripe.com/v1"
 WEBHOOK_TOLERANCE_SEC = 300
 API_KEY_PREFIX = "cwa_"
+# Fair-use recording storage for Stripe-provisioned tenants (0 = unlimited).
+DEFAULT_RECORDING_BYTES = 524_288_000  # 500 MiB
 
 
 class BillingError(Exception):
@@ -149,6 +152,14 @@ def list_plans() -> list[dict[str, Any]]:
 
 def generate_api_key() -> str:
     return API_KEY_PREFIX + secrets.token_urlsafe(24)
+
+
+def default_recording_bytes() -> int | None:
+    """BILLING_DEFAULT_RECORDING_BYTES; default 500 MiB; 0 → unlimited (None)."""
+    n = env_nonneg_int("BILLING_DEFAULT_RECORDING_BYTES", DEFAULT_RECORDING_BYTES)
+    if n <= 0:
+        return None
+    return n
 
 
 def _utcnow_iso() -> str:
@@ -445,18 +456,23 @@ def provision_from_checkout_session(
     plan = get_plan(_plan_id_from_session(session))
     email = _email_from_session(session) or (existing.email if existing else None)
     subscription_id = _subscription_id_from_session(session)
+    recording_quota = default_recording_bytes()
     if existing is not None:
         # Resubscribe / recover: keep id, reclaim seats, rotate key
         claimed_elsewhere = registry.claimed_seat_ids() - set(existing.seat_ids)
         seat_ids = pick_desktop_seats(seats_snapshot, claimed_elsewhere, plan.seats)
         api_key = generate_api_key()
+        # Keep an explicit prior quota; otherwise apply current default.
+        prior_quota = existing.max_recording_bytes
         tenant = Tenant(
             id=existing.id,
             api_keys=frozenset({api_key}),
             seat_ids=frozenset(seat_ids),
             max_concurrent_leases=plan.max_concurrent_leases,
             max_lease_ttl_sec=existing.max_lease_ttl_sec,
-            max_recording_bytes=existing.max_recording_bytes,
+            max_recording_bytes=(
+                prior_quota if prior_quota is not None else recording_quota
+            ),
             email=email or existing.email,
             plan=plan.id,
             stripe_customer_id=customer_id,
@@ -476,7 +492,7 @@ def provision_from_checkout_session(
         seat_ids=frozenset(seat_ids),
         max_concurrent_leases=plan.max_concurrent_leases,
         max_lease_ttl_sec=None,
-        max_recording_bytes=None,
+        max_recording_bytes=recording_quota,
         email=email,
         plan=plan.id,
         stripe_customer_id=customer_id,
