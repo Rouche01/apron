@@ -12,9 +12,10 @@ Pair with [hosted.md](hosted.md) (tenancy, public URLs, metering, S3 recordings)
 |------|--------|
 | Host | Linux with Docker Compose; loopback-bound published ports |
 | DNS / TLS | `GATEWAY_PUBLIC_BASE` + inventory `vnc_url` hostnames → Caddy/LB |
-| Secrets | `.env` with real `COMPUTER_API_TOKEN`, tenant keys, optional `RECORDING_S3_*` |
+| Secrets | `.env` with real `COMPUTER_API_TOKEN`, tenant keys, optional `RECORDING_S3_*`, Stripe billing vars if open signup |
 | Inventory | Hosted desktop JSON (not localhost Watch URLs) |
 | Tenants | `gateway/tenants.json` mounted; ops token ≠ customer keys |
+| Billing (optional) | Public HTTPS to `/v1/billing/webhook`; **rw** tenants mount; Stripe Price IDs + webhook secret |
 
 ### First bring-up
 
@@ -36,7 +37,16 @@ services:
     ports: ["127.0.0.1:9000:9000"]
     environment:
       TENANTS_PATH: /etc/computer/tenants.json
+      # Optional Stripe open signup — see docs/hosted.md Billing
+      # STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      # STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      # STRIPE_PRICE_STARTER: ${STRIPE_PRICE_STARTER:-}
+      # STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
+      # BILLING_SUCCESS_URL: ${BILLING_SUCCESS_URL:-}
+      # BILLING_CANCEL_URL: ${BILLING_CANCEL_URL:-}
+      # BILLING_PORTAL_RETURN_URL: ${BILLING_PORTAL_RETURN_URL:-}
     volumes:
+      # Invite-only hand-edited keys: :ro is fine. Stripe provision needs rw (no :ro).
       - ${TENANTS_FILE:-./gateway/tenants.json}:/etc/computer/tenants.json:ro
   worker-1:
     ports: ["127.0.0.1:6081:6080"]
@@ -122,9 +132,28 @@ Do **not** alert on `/ready` 503 alone during planned full utilization without a
 
 Compose already healthchecks gateway `:9000/health` and each worker. Prefer probing the **public** `GATEWAY_PUBLIC_BASE` from outside the host so Caddy is in the path for API alerts; probe loopback for worker-only issues.
 
+## Stripe webhook + billing capacity
+
+When open signup is on ([hosted.md](hosted.md) Billing):
+
+1. In Stripe Dashboard → Webhooks, endpoint  
+   `https://<GATEWAY_PUBLIC_BASE host>/v1/billing/webhook`  
+   Events: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`.
+2. Copy the signing secret into `STRIPE_WEBHOOK_SECRET`. Endpoint must be reachable on **public HTTPS** (same Caddy path as the API).
+3. Mount `tenants.json` **rw** so provision/suspend persist without gateway recreate.
+4. Capacity: unclaimed **desktop** inventory seats ≥ sum of seats for plans you sell. Webhook returns **500** on undersupply (Stripe retries); no partial tenant. Watch signup 500s in gateway logs as a capacity page.
+
+Smoke (after a test Checkout in Stripe test mode):
+
+```bash
+curl -sf "$GW/v1/billing/plans" | python3 -m json.tool
+# Complete Checkout in browser → success URL should call:
+# GET $GW/v1/billing/checkout/{CHECKOUT_SESSION_ID}  → api_key once
+```
+
 ## Capacity playbook
 
-Hosted beta capacity = **reserved inventory** + **per-tenant caps**. Customers do not get lease-burst outside `seat_ids`.
+Hosted beta capacity = **reserved inventory** + **per-tenant caps**. Customers do not get lease-burst outside `seat_ids`. With Stripe billing, new signups **auto-claim** unused desktop seats into the new tenant’s allowlist — keep spare inventory ahead of demand.
 
 ### Read the room
 

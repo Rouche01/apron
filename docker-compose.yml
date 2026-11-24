@@ -190,12 +190,22 @@ services:
       RECORDING_S3_SECRET_KEY: ${RECORDING_S3_SECRET_KEY:-}
       # Hosted soft tenancy (optional). Leave unset for OSS single-token mode.
       # TENANTS_PATH: /etc/computer/tenants.json
+      # Stripe billing (optional) — see docs/hosted.md Billing / .env.example
+      # STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      # STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      # STRIPE_PRICE_STARTER: ${STRIPE_PRICE_STARTER:-}
+      # STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
+      # BILLING_SUCCESS_URL: ${BILLING_SUCCESS_URL:-}
+      # BILLING_CANCEL_URL: ${BILLING_CANCEL_URL:-}
+      # BILLING_PORTAL_RETURN_URL: ${BILLING_PORTAL_RETURN_URL:-}
     volumes:
       # Host file must exist (missing path → Docker mounts an empty dir → gateway exits).
       - ${WORKER_INVENTORY_FILE:-./gateway/workers.json}:/etc/computer/workers.json:ro
       - gateway_recordings:/data/recordings
       # Uncomment with TENANTS_PATH for multi-customer keys (see docs/hosted.md):
+      # Invite-only hand edits: :ro. Stripe Checkout provision needs rw (omit :ro).
       # - ${TENANTS_FILE:-./gateway/tenants.json}:/etc/computer/tenants.json:ro
+      # - ${TENANTS_FILE:-./gateway/tenants.json}:/etc/computer/tenants.json
     depends_on:
       worker-1:
         condition: service_healthy

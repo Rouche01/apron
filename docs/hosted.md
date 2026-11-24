@@ -25,7 +25,10 @@ Compose mount example:
 environment:
   TENANTS_PATH: /etc/computer/tenants.json
 volumes:
+  # Invite-only (ops edits tenants.json by hand): :ro is fine
   - ./gateway/tenants.json:/etc/computer/tenants.json:ro
+  # Stripe signup provision (see Billing below): mount rw — drop :ro
+  # - ./gateway/tenants.json:/etc/computer/tenants.json
 ```
 
 3. Recreate gateway: `docker compose up -d --force-recreate gateway`
@@ -163,9 +166,48 @@ Optional tenant field `max_recording_bytes`. When set:
 
 TTL remains `RECORDING_TTL_SEC` (default 7d) via the existing sweeper.
 
-## Not in this MVP
+## Billing (Stripe Checkout → API key)
+
+Open signup for the paid hosted fleet. Same `/v1` lease API; keys land in `tenants.json` via webhook. Off when `STRIPE_SECRET_KEY` is unset.
+
+### Env
+
+| Variable | Role |
+|----------|------|
+| `STRIPE_SECRET_KEY` | Stripe secret; billing disabled if empty |
+| `STRIPE_WEBHOOK_SECRET` | Verify `Stripe-Signature` on `/v1/billing/webhook` |
+| `STRIPE_PRICE_STARTER` / `STRIPE_PRICE_PRO` | Recurring Price IDs (`starter` = 1 seat, `pro` = 2) |
+| `BILLING_SUCCESS_URL` | Checkout return (include `{CHECKOUT_SESSION_ID}`) |
+| `BILLING_CANCEL_URL` | Checkout cancel |
+| `BILLING_PORTAL_RETURN_URL` | Customer Portal return (invoices / cancel) |
+| `TENANTS_PATH` | **Required** for billing — registry the webhook upserts |
+
+Mount `tenants.json` **read-write** (no `:ro`) so Checkout provision can persist tenants without recreating the gateway.
+
+### Flow
+
+1. `GET /v1/billing/plans` — public plan matrix (seats; whether a price id is configured).
+2. `POST /v1/billing/checkout` `{"email","plan"}` — returns Stripe Checkout `url` + `checkout_session_id` (**404** if billing off).
+3. Stripe → `POST /v1/billing/webhook` (`checkout.session.completed`) — gateway:
+   - Claims **N unclaimed non-ephemeral desktop** inventory seats (prefers `state=free`; skips phone / burst)
+   - Upserts tenant (`id` = Stripe `customer`; `cwa_…` API key; plan caps)
+   - Idempotent if that customer already has seats + keys
+4. Success page: `GET /v1/billing/checkout/{CHECKOUT_SESSION_ID}` — returns `api_key` **once**, then `revealed: true` / `api_key: null`.
+5. Invoices / cancel: `POST /v1/billing/portal` with the customer Bearer → Stripe Customer Portal URL.
+6. `customer.subscription.deleted` (or unpaid/canceled update) → suspend (clear keys + seats). Plan change → grow/shrink allowlist.
+
+Undersupply (not enough free desktop seats for the plan) → webhook **500** so Stripe retries; **no** partial tenant.
+
+### Capacity rule
+
+Unclaimed desktop seats in inventory must cover open signups:  
+`Σ plan.seats for active subscriptions ≤ desktop inventory − seats already in any tenant allowlist`.  
+Grow workers + inventory before marketing a plan tier you cannot fulfill. Phone seats are **not** auto-claimed.
+
+### Not in this pack
 
 - Shared-pool / burst elasticity beyond the seat allowlist  
-- Stripe key provisioning  
+- Metered seat-hour Stripe usage records (caps remain `max_concurrent_leases`)  
+- Phone seats in auto-claim  
 
-See [docs/v1.md](v1.md) for the shared `/v1` contract and [hosted-ops.md](hosted-ops.md) for beta deploy / alert / backup runbooks.
+See [docs/v1.md](v1.md) for the shared `/v1` contract and [hosted-ops.md](hosted-ops.md) for deploy / alert / backup / webhook ops.
