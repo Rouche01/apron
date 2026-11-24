@@ -19,6 +19,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterator
 
+from parseutil import opt_bool, opt_str
+
 logger = logging.getLogger("computer.gateway.tenancy")
 
 
@@ -75,29 +77,6 @@ def filter_seats(ctx: TenantContext, seats: list[dict[str, Any]]) -> list[dict[s
     if ctx.is_ops or ctx.seat_ids is None:
         return seats
     return [s for s in seats if (s.get("id") or s.get("seat_id") or "") in ctx.seat_ids]
-
-
-def _opt_str(row: dict[str, Any], key: str) -> str | None:
-    raw = row.get(key)
-    if raw is None or raw == "":
-        return None
-    return str(raw).strip() or None
-
-
-def _opt_bool(row: dict[str, Any], key: str, *, default: bool = False) -> bool:
-    raw = row.get(key)
-    if raw is None or raw == "":
-        return default
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, (int, float)):
-        return bool(raw)
-    s = str(raw).strip().lower()
-    if s in ("1", "true", "yes", "on"):
-        return True
-    if s in ("0", "false", "no", "off"):
-        return False
-    return default
 
 
 def _parse_tenant_row(row: dict[str, Any], index: int) -> Tenant:
@@ -169,12 +148,12 @@ def _parse_tenant_row(row: dict[str, Any], index: int) -> Tenant:
         max_concurrent_leases=concurrent,
         max_lease_ttl_sec=max_ttl,
         max_recording_bytes=max_rec,
-        email=_opt_str(row, "email"),
-        plan=_opt_str(row, "plan"),
-        stripe_customer_id=_opt_str(row, "stripe_customer_id"),
-        stripe_subscription_id=_opt_str(row, "stripe_subscription_id"),
-        api_key_revealed_at=_opt_str(row, "api_key_revealed_at"),
-        disabled=_opt_bool(row, "disabled", default=False),
+        email=opt_str(row, "email"),
+        plan=opt_str(row, "plan"),
+        stripe_customer_id=opt_str(row, "stripe_customer_id"),
+        stripe_subscription_id=opt_str(row, "stripe_subscription_id"),
+        api_key_revealed_at=opt_str(row, "api_key_revealed_at"),
+        disabled=opt_bool(row, "disabled", default=False),
     )
 
 

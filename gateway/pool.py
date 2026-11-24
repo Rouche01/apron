@@ -31,6 +31,7 @@ import burst_seats
 import cloud_phone_seats
 import physical_phone_seats
 from inventory import SeatKind, WorkerSpec
+from parseutil import env_nonneg_int
 from physical_phone_seats import vnc_url_with_udid
 from workers.base import WorkerFactory
 from workers.disabled import DisabledWorkerFactory
@@ -54,13 +55,6 @@ def _utcnow() -> datetime:
 
 def _clamp_ttl(ttl: int, *, minimum: int = 30) -> int:
     return ttl if ttl >= minimum else minimum
-
-
-def _env_burst_max(name: str, default: int = 0) -> int:
-    try:
-        return max(0, int(os.environ.get(name, str(default)) or default))
-    except ValueError:
-        return default
 
 
 @dataclass
@@ -129,17 +123,17 @@ class SessionPool:
         self._desktop_burst_max = (
             desktop_burst_max
             if desktop_burst_max is not None
-            else _env_burst_max("DESKTOP_BURST_MAX")
+            else env_nonneg_int("DESKTOP_BURST_MAX", 0)
         )
         self._phone_burst_max = (
             phone_burst_max
             if phone_burst_max is not None
-            else _env_burst_max("PHONE_BURST_MAX")
+            else env_nonneg_int("PHONE_BURST_MAX", 0)
         )
         self._phone_warm_spawn_max = (
             phone_warm_spawn_max
             if phone_warm_spawn_max is not None
-            else _env_burst_max("PHONE_WARM_SPAWN_MAX")
+            else env_nonneg_int("PHONE_WARM_SPAWN_MAX", 0)
         )
         self._lock = threading.Lock()
         self._slots: list[WorkerSlot] = []

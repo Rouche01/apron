@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Deque
 
+from parseutil import env_nonneg_int
 
 DEFAULT_RPM = 120
 DEFAULT_OBSERVE_RPM = 60
@@ -22,16 +23,6 @@ WINDOW_SEC = 60.0
 BUCKET_GENERAL = "general"
 BUCKET_OBSERVE = "observe"
 BUCKET_BILLING = "billing"
-
-
-def _env_nonneg_int(name: str, default: int) -> int:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        return max(0, int(raw))
-    except ValueError:
-        return default
 
 
 @dataclass(frozen=True)
@@ -46,11 +37,11 @@ class RateLimitConfig:
     @classmethod
     def from_env(cls) -> RateLimitConfig:
         return cls(
-            general_rpm=_env_nonneg_int("ABUSE_RATE_LIMIT_RPM", DEFAULT_RPM),
-            observe_rpm=_env_nonneg_int(
+            general_rpm=env_nonneg_int("ABUSE_RATE_LIMIT_RPM", DEFAULT_RPM),
+            observe_rpm=env_nonneg_int(
                 "ABUSE_RATE_LIMIT_OBSERVE_RPM", DEFAULT_OBSERVE_RPM
             ),
-            billing_rpm=_env_nonneg_int(
+            billing_rpm=env_nonneg_int(
                 "ABUSE_RATE_LIMIT_BILLING_RPM", DEFAULT_BILLING_RPM
             ),
         )

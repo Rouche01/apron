@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 
+from parseutil import env_int
 from providers.base import (
     CloudPhoneProviderError,
     CloudSession,
@@ -24,18 +25,11 @@ PROVIDER_NAME = "phone-harness"
 DEFAULT_API_BASE = "https://api.phone-harness.com"
 
 
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    return int(raw)
-
-
 def _default_timeout_sec() -> int:
     """Harness session lifetime should cover lease + park idle."""
-    session = _env_int("SESSION_TTL_SEC", 600)
-    parked = _env_int("PARKED_TTL_SEC", 1800)
-    floor = _env_int("PHONE_HARNESS_TIMEOUT_SEC", 0)
+    session = env_int("SESSION_TTL_SEC", 600)
+    parked = env_int("PARKED_TTL_SEC", 1800)
+    floor = env_int("PHONE_HARNESS_TIMEOUT_SEC", 0)
     if floor > 0:
         return max(floor, 900)
     return max(session + parked, 900)
