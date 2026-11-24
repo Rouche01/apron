@@ -178,6 +178,7 @@ Plans: [`.cursor/plans/elastic_seats.plan.md`](.cursor/plans/elastic_seats.plan.
 - ThinkPad/Caddy: copy `gateway/workers.hsv.example.json` → e.g. `gateway/workers.hsv.json`, edit hostnames (includes optional `phone1`)
 - Hosted public desktop: `gateway/workers.hosted.example.json` + `deploy/hosted-caddy.example.caddyfile` — [docs/hosted.md](docs/hosted.md)
 - Hosted beta ops (deploy / alerts / capacity / recording backup): [docs/hosted-ops.md](docs/hosted-ops.md)
+- Hosted security (threat model / isolation / token rotation / port check): [docs/hosted-security.md](docs/hosted-security.md)
 
 On boot the gateway **logs each seat** (`id`, `kind`, `provider`, `url`, `vnc_url`) and **exits** if the mount is missing/invalid (Docker empty-dir footgun) or an inventory `provider` is unregistered. Confirm with `GET /v1/seats` after up.
 

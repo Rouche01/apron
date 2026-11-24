@@ -6,7 +6,8 @@ Hard isolation (separate Compose stacks per customer) remains an ops escape hatc
 
 Also covered here: **public `GATEWAY_PUBLIC_BASE` + desktop Watch URLs** behind LB/Caddy (phone Watch later).
 
-**Ops (deploy, alerts, capacity, recording backup):** [hosted-ops.md](hosted-ops.md).
+**Ops (deploy, alerts, capacity, recording backup):** [hosted-ops.md](hosted-ops.md).  
+**Security (threat model, isolation, token rotation, port check):** [hosted-security.md](hosted-security.md).
 
 ## Enable
 

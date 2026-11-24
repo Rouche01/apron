@@ -18,3 +18,4 @@ We aim to acknowledge reports within a few business days.
 
 - Keep worker control ports (`:8000`) off the public internet; publish gateway + Watch (noVNC / scrcpy) via reverse proxy or localhost only — see [AGENTS.md](AGENTS.md).
 - Bearer tokens (`COMPUTER_API_TOKEN`) and cloud phone API keys must not be committed.
+- Hosted threat model, soft tenancy limits, token rotation, and a compose port check: **[docs/hosted-security.md](docs/hosted-security.md)** (`scripts/hosted-security-check.sh`).

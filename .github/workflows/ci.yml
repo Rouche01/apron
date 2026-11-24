@@ -44,6 +44,14 @@ jobs:
             providers/test_phone_harness.py \
             -q
 
+  compose-security:
+    name: Hosted compose security check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Worker :8000 not published
+        run: bash scripts/hosted-security-check.sh docker-compose.yml
+
   client-tests:
     name: Client unit tests
     runs-on: ubuntu-latest

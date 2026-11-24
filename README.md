@@ -66,7 +66,7 @@ Repo layout, seat lifecycle (lease / park / recycle), env vars, reverse-proxy no
 ## Advanced profiles
 
 Not required for the desktop golden path. How to enable each profile and inventory file: **[docs/profiles.md](docs/profiles.md)**  
-Hosted multi-customer API keys (soft seat isolation): **[docs/hosted.md](docs/hosted.md)**
+Hosted multi-customer API keys (soft seat isolation): **[docs/hosted.md](docs/hosted.md)** · security note: **[docs/hosted-security.md](docs/hosted-security.md)**
 
 | Profile | What |
 |---------|------|

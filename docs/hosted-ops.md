@@ -2,7 +2,7 @@
 
 Runbook for an invite-only hosted fleet on this repo’s Compose gateway + desktop workers. Product surface stays `/v1`; this doc is for the operator who deploys and pages on it.
 
-Pair with [hosted.md](hosted.md) (tenancy, public URLs, metering, S3 recordings) and [v1.md](v1.md) (API contract).
+Pair with [hosted.md](hosted.md) (tenancy, public URLs, metering, S3 recordings), [hosted-security.md](hosted-security.md) (threat model / ports / token rotation), and [v1.md](v1.md) (API contract).
 
 ## Deploy runbook
 
@@ -256,4 +256,6 @@ Before calling hosted beta “ops-ready”:
 - [ ] Deploy + upgrade + rollback exercised once on the real host
 - [ ] Capacity playbook understood (503 vs 429)
 - [ ] Recording backup job exists (local cron or S3 versioning)
-- [ ] Worker `:8000` not on the public face; only gateway + Watch via proxy
+- [ ] Worker `:8000` not on the public face; only gateway + Watch via proxy  
+- [ ] `scripts/hosted-security-check.sh` passes (compose + override)  
+- [ ] Ops / tenant token rotation exercised once — [hosted-security.md](hosted-security.md)
