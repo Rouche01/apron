@@ -20,6 +20,13 @@ import abuse as abuse_mod
 import billing as billing_mod
 import physical_phone_seats
 import providers  # noqa: F401 — registers CloudPhoneProvider impls (phone-harness, …)
+from abuse import (
+    BUCKET_BILLING,
+    BUCKET_GENERAL,
+    BUCKET_OBSERVE,
+    RateLimitConfig,
+    SlidingWindowLimiter,
+)
 from billing import (
     BillingError,
     InsufficientSeats,
@@ -84,7 +91,45 @@ if tenants is not None:
         if _t.max_recording_bytes:
             recordings.set_quota_bytes(_t.id, _t.max_recording_bytes)
 
+# Hosted abuse rate limits (active when TENANTS_PATH is set; see require_tenant / billing).
+rate_limiter = SlidingWindowLimiter(RateLimitConfig.from_env())
+
 _security = HTTPBearer(auto_error=False)
+
+
+def _client_ip(request: Request) -> str:
+    xff = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    if xff:
+        return xff
+    if request.client and request.client.host:
+        return request.client.host
+    return "_"
+
+
+def _rate_limit_or_429(bucket: str, key: str) -> None:
+    result = rate_limiter.check(bucket, key)
+    if result.allowed:
+        return
+    headers: dict[str, str] = {}
+    if result.retry_after_sec is not None:
+        headers["Retry-After"] = str(max(1, int(result.retry_after_sec + 0.999)))
+    raise HTTPException(
+        status_code=429,
+        detail={
+            "error": "rate limit exceeded",
+            "code": "rate_limited",
+            "limit": result.limit,
+            "bucket": bucket,
+        },
+        headers=headers,
+    )
+
+
+def _enforce_billing_ip_limit(request: Request) -> None:
+    """Public billing routes: per-IP limit when tenancy (hosted) is on."""
+    if tenants is None:
+        return
+    _rate_limit_or_429(BUCKET_BILLING, _client_ip(request))
 
 
 def _reaper_loop(stop: threading.Event) -> None:
@@ -132,6 +177,14 @@ async def lifespan(_app: FastAPI):
             )
         else:
             logger.info("billing enabled (Stripe Checkout + webhook)")
+    if tenants is not None:
+        cfg = rate_limiter.config
+        logger.info(
+            "abuse limits: general_rpm=%s observe_rpm=%s billing_rpm=%s",
+            cfg.general_rpm,
+            cfg.observe_rpm,
+            cfg.billing_rpm,
+        )
     inv = os.environ.get("WORKER_INVENTORY_PATH", "").strip() or "(legacy WORKER_URLS)"
     logger.info(
         "gateway ready: %d workers, public_base=%s, inventory=%s, "
@@ -169,6 +222,7 @@ app = FastAPI(
 
 
 def require_tenant(
+    request: Request,
     creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_security)],
 ) -> TenantContext:
     """Resolve Bearer → TenantContext (OSS single-token or multi-tenant keys)."""
@@ -191,6 +245,13 @@ def require_tenant(
                             "tenant_id": ctx.id,
                         },
                     )
+                # Hosted: per-tenant rate limit (stricter on screenshot/observe/action)
+                bucket = (
+                    BUCKET_OBSERVE
+                    if abuse_mod.observe_path(request.url.path)
+                    else BUCKET_GENERAL
+                )
+                _rate_limit_or_429(bucket, ctx.id or "_")
                 return ctx
         raise HTTPException(status_code=401, detail="invalid or missing bearer token")
 
@@ -981,14 +1042,16 @@ def get_recording_frame(session_id: str, name: str, ctx: TenantDep):
 
 
 @app.get("/v1/billing/plans", tags=["billing"])
-def billing_plans():
+def billing_plans(request: Request):
     """Public plan matrix (seats + whether a Stripe price id is configured)."""
+    _enforce_billing_ip_limit(request)
     return {"plans": list_plans()}
 
 
 @app.post("/v1/billing/checkout", tags=["billing"])
-def billing_checkout(body: BillingCheckoutRequest):
+def billing_checkout(request: Request, body: BillingCheckoutRequest):
     """Start Stripe Checkout (subscription). Public — no Bearer required."""
+    _enforce_billing_ip_limit(request)
     cfg = _require_billing_config()
     _require_billing_tenants()
     try:
@@ -1009,8 +1072,9 @@ def billing_checkout(body: BillingCheckoutRequest):
 
 
 @app.get("/v1/billing/checkout/{session_id}", tags=["billing"])
-def billing_checkout_reveal(session_id: str):
+def billing_checkout_reveal(request: Request, session_id: str):
     """Success-page key reveal: api_key returned once, then revealed=true."""
+    _enforce_billing_ip_limit(request)
     cfg = _require_billing_config()
     reg = _require_billing_tenants()
     stripe = StripeClient(cfg)
