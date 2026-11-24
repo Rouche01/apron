@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from inventory import WorkerSpec
 from pool import SessionPool
 from recording import RecordingStore
-from tenancy import TenantRegistry, filter_seats, ops_context, oss_context
+from tenancy import Tenant, TenantRegistry, filter_seats, ops_context, oss_context
 
 
 def test_registry_auth_and_duplicates(tmp_path: Path):
@@ -65,6 +65,129 @@ def test_registry_auth_and_duplicates(tmp_path: Path):
     )
     with pytest.raises(ValueError, match="duplicate"):
         TenantRegistry.from_path(bad)
+
+
+def test_registry_empty_file_and_billing_fields(tmp_path: Path):
+    path = tmp_path / "tenants.json"
+    path.write_text(
+        json.dumps(
+            {
+                "tenants": [
+                    {
+                        "id": "acme",
+                        "api_keys": ["key-acme"],
+                        "seat_ids": ["desk1"],
+                        "email": "a@example.com",
+                        "plan": "starter",
+                        "stripe_customer_id": "cus_1",
+                        "stripe_subscription_id": "sub_1",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    reg = TenantRegistry.from_path(path)
+    assert reg.path == path
+    t = reg.get("acme")
+    assert t is not None
+    assert t.email == "a@example.com"
+    assert t.plan == "starter"
+    assert t.stripe_customer_id == "cus_1"
+    assert reg.get_by_stripe_customer("cus_1") is t
+    assert reg.get_by_stripe_customer("cus_missing") is None
+    assert reg.claimed_seat_ids() == {"desk1"}
+
+    empty = tmp_path / "empty.json"
+    empty.write_text(json.dumps({"tenants": []}), encoding="utf-8")
+    empty_reg = TenantRegistry.from_path(empty)
+    assert empty_reg.iter_tenants() == []
+    assert empty_reg.claimed_seat_ids() == set()
+
+
+def test_upsert_reload_atomic(tmp_path: Path):
+    path = tmp_path / "tenants.json"
+    path.write_text(json.dumps({"tenants": []}), encoding="utf-8")
+    reg = TenantRegistry.from_path(path)
+
+    created = reg.upsert_tenant(
+        Tenant(
+            id="acme",
+            api_keys=frozenset({"key-acme"}),
+            seat_ids=frozenset({"desk1"}),
+            max_concurrent_leases=1,
+            max_lease_ttl_sec=None,
+            max_recording_bytes=None,
+            email="a@example.com",
+            plan="starter",
+            stripe_customer_id="cus_1",
+            stripe_subscription_id="sub_1",
+        )
+    )
+    assert created.id == "acme"
+    assert reg.authenticate_key("key-acme") is not None
+    assert reg.claimed_seat_ids() == {"desk1"}
+
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk["tenants"][0]["id"] == "acme"
+    assert on_disk["tenants"][0]["stripe_customer_id"] == "cus_1"
+    assert on_disk["tenants"][0]["plan"] == "starter"
+    assert not path.with_suffix(".json.tmp").exists()
+
+    # Seat clash with another tenant
+    with pytest.raises(ValueError, match="already claimed"):
+        reg.upsert_tenant(
+            Tenant(
+                id="beta",
+                api_keys=frozenset({"key-beta"}),
+                seat_ids=frozenset({"desk1"}),
+                max_concurrent_leases=1,
+                max_lease_ttl_sec=None,
+                max_recording_bytes=None,
+            )
+        )
+
+    # External edit then reload
+    path.write_text(
+        json.dumps(
+            {
+                "tenants": [
+                    {
+                        "id": "acme",
+                        "api_keys": ["key-acme", "key-acme-2"],
+                        "seat_ids": ["desk1", "desk2"],
+                        "max_concurrent_leases": 2,
+                        "plan": "pro",
+                        "stripe_customer_id": "cus_1",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    reg.reload()
+    assert reg.claimed_seat_ids() == {"desk1", "desk2"}
+    assert reg.authenticate_key("key-acme-2") is not None
+    assert reg.get("acme") is not None and reg.get("acme").plan == "pro"
+
+    # Suspend-style upsert: empty seats/keys still round-trip
+    reg.upsert_tenant(
+        Tenant(
+            id="acme",
+            api_keys=frozenset(),
+            seat_ids=frozenset(),
+            max_concurrent_leases=1,
+            max_lease_ttl_sec=None,
+            max_recording_bytes=None,
+            stripe_customer_id="cus_1",
+            plan="starter",
+        )
+    )
+    reg.reload()
+    assert reg.get("acme") is not None
+    assert reg.authenticate_key("key-acme") is None
+    assert reg.claimed_seat_ids() == set()
+    assert reg.get_by_stripe_customer("cus_1") is not None
 
 
 def test_filter_seats():
