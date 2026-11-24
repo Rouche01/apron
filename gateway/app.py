@@ -16,8 +16,25 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
+import billing as billing_mod
 import physical_phone_seats
 import providers  # noqa: F401 — registers CloudPhoneProvider impls (phone-harness, …)
+from billing import (
+    BillingError,
+    InsufficientSeats,
+    StripeAPIError,
+    StripeClient,
+    WebhookSignatureError,
+    get_plan,
+    list_plans,
+    load_config_from_env,
+    mark_api_key_revealed,
+    parse_webhook_event,
+    plan_id_from_subscription,
+    provision_from_checkout_session,
+    resize_tenant_plan,
+    suspend_tenant,
+)
 from inventory import SeatKind, load_workers
 from pool import SeatPinError, SessionPool
 from providers import registered_names
@@ -101,6 +118,19 @@ async def lifespan(_app: FastAPI):
             )
     elif not API_TOKEN:
         logger.warning("COMPUTER_API_TOKEN unset — gateway auth is disabled (dev only)")
+    if billing_mod.billing_enabled():
+        if load_config_from_env() is None:
+            logger.warning(
+                "STRIPE_SECRET_KEY set but billing config incomplete "
+                "(webhook secret + success/cancel/portal URLs)"
+            )
+        elif tenants is None:
+            logger.warning(
+                "billing configured but TENANTS_PATH unset — "
+                "/v1/billing/* will return 503 until tenancy is enabled"
+            )
+        else:
+            logger.info("billing enabled (Stripe Checkout + webhook)")
     inv = os.environ.get("WORKER_INVENTORY_PATH", "").strip() or "(legacy WORKER_URLS)"
     logger.info(
         "gateway ready: %d workers, public_base=%s, inventory=%s, "
@@ -298,6 +328,35 @@ def _start_recording_for_lease(
 def _finalize_recording(session_id: str) -> None:
     pool.set_recording(session_id, False)
     recordings.finalize(session_id)
+
+
+def _sync_tenant_recording_quotas() -> None:
+    """Refresh RecordingStore quotas from the live tenant registry."""
+    if tenants is None:
+        return
+    for t in tenants.iter_tenants():
+        recordings.set_quota_bytes(t.id, t.max_recording_bytes)
+
+
+def _require_billing_config():
+    cfg = load_config_from_env()
+    if cfg is None:
+        raise HTTPException(status_code=404, detail="billing not configured")
+    return cfg
+
+
+def _require_billing_tenants():
+    if tenants is None:
+        raise HTTPException(
+            status_code=503,
+            detail="tenancy required for billing (set TENANTS_PATH)",
+        )
+    return tenants
+
+
+class BillingCheckoutRequest(BaseModel):
+    email: str
+    plan: str = Field(description="starter | pro")
 
 
 @app.middleware("http")
@@ -906,3 +965,196 @@ def get_recording_frame(session_id: str, name: str, ctx: TenantDep):
     if data is None:
         raise HTTPException(status_code=404, detail="frame not found")
     return Response(content=data, media_type="image/png")
+
+
+# --- Hosted billing (Stripe) -------------------------------------------------
+
+
+@app.get("/v1/billing/plans", tags=["billing"])
+def billing_plans():
+    """Public plan matrix (seats + whether a Stripe price id is configured)."""
+    return {"plans": list_plans()}
+
+
+@app.post("/v1/billing/checkout", tags=["billing"])
+def billing_checkout(body: BillingCheckoutRequest):
+    """Start Stripe Checkout (subscription). Public — no Bearer required."""
+    cfg = _require_billing_config()
+    _require_billing_tenants()
+    try:
+        plan = get_plan(body.plan)
+        stripe = StripeClient(cfg)
+        try:
+            session = stripe.create_checkout_session(email=body.email, plan=plan)
+        finally:
+            stripe.close()
+    except BillingError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except StripeAPIError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    return {
+        "url": session["url"],
+        "checkout_session_id": session["id"],
+    }
+
+
+@app.get("/v1/billing/checkout/{session_id}", tags=["billing"])
+def billing_checkout_reveal(session_id: str):
+    """Success-page key reveal: api_key returned once, then revealed=true."""
+    cfg = _require_billing_config()
+    reg = _require_billing_tenants()
+    stripe = StripeClient(cfg)
+    try:
+        try:
+            session = stripe.retrieve_checkout_session(session_id)
+        except StripeAPIError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+    finally:
+        stripe.close()
+
+    if str(session.get("status") or "") != "complete":
+        raise HTTPException(status_code=404, detail="checkout session not complete")
+
+    customer = session.get("customer")
+    customer_id = customer if isinstance(customer, str) else None
+    if isinstance(customer, dict):
+        customer_id = str(customer.get("id") or "") or None
+    if not customer_id:
+        raise HTTPException(status_code=404, detail="checkout session has no customer")
+
+    tenant = reg.get_by_stripe_customer(customer_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="tenant not provisioned yet")
+
+    seat_ids = sorted(tenant.seat_ids)
+    base = {
+        "tenant_id": tenant.id,
+        "plan": tenant.plan,
+        "seat_ids": seat_ids,
+        "email": tenant.email,
+    }
+    if tenant.api_key_revealed_at:
+        return {**base, "api_key": None, "revealed": True}
+
+    if not tenant.api_keys:
+        raise HTTPException(status_code=404, detail="tenant has no api key")
+
+    api_key = sorted(tenant.api_keys)[0]
+    mark_api_key_revealed(reg, tenant)
+    return {**base, "api_key": api_key, "revealed": False}
+
+
+@app.post("/v1/billing/portal", tags=["billing"])
+def billing_portal(ctx: TenantDep):
+    """Stripe Customer Portal (invoices / cancel). Requires tenant Bearer."""
+    cfg = _require_billing_config()
+    reg = _require_billing_tenants()
+    if ctx.is_ops or not ctx.id:
+        raise HTTPException(
+            status_code=400,
+            detail="portal requires a customer API key (not ops)",
+        )
+    tenant = reg.get(ctx.id)
+    if tenant is None or not tenant.stripe_customer_id:
+        raise HTTPException(status_code=404, detail="no stripe customer for tenant")
+    stripe = StripeClient(cfg)
+    try:
+        try:
+            portal = stripe.create_portal_session(
+                customer_id=tenant.stripe_customer_id
+            )
+        except (BillingError, StripeAPIError) as e:
+            raise HTTPException(status_code=502, detail=str(e)) from e
+    finally:
+        stripe.close()
+    return {"url": portal["url"]}
+
+
+@app.post("/v1/billing/webhook", tags=["billing"])
+async def billing_webhook(
+    request: Request,
+    stripe_signature: Annotated[str | None, Header(alias="Stripe-Signature")] = None,
+):
+    """Stripe webhook: provision on checkout, suspend/resize on subscription events."""
+    cfg = _require_billing_config()
+    reg = _require_billing_tenants()
+    payload = await request.body()
+    try:
+        event = parse_webhook_event(
+            payload, stripe_signature, secret=cfg.webhook_secret
+        )
+    except WebhookSignatureError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except BillingError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    etype = str(event.get("type") or "")
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    obj = data.get("object") if isinstance(data, dict) else None
+    if not isinstance(obj, dict):
+        raise HTTPException(status_code=400, detail="webhook missing data.object")
+
+    try:
+        if etype == "checkout.session.completed":
+            tenant = provision_from_checkout_session(
+                obj, registry=reg, seats_snapshot=pool.list_seats()
+            )
+            _sync_tenant_recording_quotas()
+            logger.info(
+                "billing webhook provisioned tenant=%s plan=%s seats=%s",
+                tenant.id,
+                tenant.plan,
+                sorted(tenant.seat_ids),
+            )
+            return {"ok": True, "tenant_id": tenant.id}
+
+        if etype == "customer.subscription.deleted":
+            customer_id = str(obj.get("customer") or "").strip()
+            tenant = reg.get_by_stripe_customer(customer_id) if customer_id else None
+            if tenant is not None:
+                suspend_tenant(reg, tenant)
+                _sync_tenant_recording_quotas()
+                logger.info("billing webhook suspended tenant=%s", tenant.id)
+            return {"ok": True}
+
+        if etype == "customer.subscription.updated":
+            customer_id = str(obj.get("customer") or "").strip()
+            tenant = reg.get_by_stripe_customer(customer_id) if customer_id else None
+            if tenant is None:
+                return {"ok": True, "skipped": "unknown_customer"}
+            status = str(obj.get("status") or "")
+            if status in ("canceled", "unpaid", "incomplete_expired"):
+                suspend_tenant(reg, tenant)
+                _sync_tenant_recording_quotas()
+                logger.info(
+                    "billing webhook suspended tenant=%s status=%s",
+                    tenant.id,
+                    status,
+                )
+                return {"ok": True, "suspended": True}
+            plan_id = plan_id_from_subscription(obj)
+            if plan_id:
+                plan = get_plan(plan_id)
+                resize_tenant_plan(
+                    reg,
+                    tenant,
+                    plan=plan,
+                    seats_snapshot=pool.list_seats(),
+                )
+                _sync_tenant_recording_quotas()
+                logger.info(
+                    "billing webhook resized tenant=%s plan=%s",
+                    tenant.id,
+                    plan_id,
+                )
+            return {"ok": True}
+
+    except InsufficientSeats as e:
+        # 500 so Stripe retries when capacity frees up
+        logger.error("billing webhook insufficient seats: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except BillingError as e:
+        logger.error("billing webhook error type=%s: %s", etype, e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    return {"ok": True, "ignored": etype}

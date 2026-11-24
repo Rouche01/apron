@@ -1,15 +1,18 @@
-"""Billing module: plans, webhook HMAC, seat claim, provision (no routes yet)."""
+"""Billing module + /v1/billing routes."""
 
 from __future__ import annotations
 
 import hashlib
 import hmac
 import json
+import os
 import time
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from billing import (
     BillingDisabled,
@@ -30,7 +33,18 @@ from billing import (
     suspend_tenant,
     verify_webhook_signature,
 )
+from inventory import WorkerSpec
+from pool import SessionPool
+from recording import RecordingStore
 from tenancy import TenantRegistry
+
+_GATEWAY_DIR = Path(__file__).resolve().parent
+os.environ.setdefault("WORKER_INVENTORY_PATH", str(_GATEWAY_DIR / "workers.json"))
+os.environ.setdefault("REQUIRE_WORKER_INVENTORY", "1")
+os.environ.setdefault("COMPUTER_API_TOKEN", "")
+os.environ.setdefault(
+    "RECORDING_DIR", str(_GATEWAY_DIR / ".pytest_recordings_billing")
+)
 
 
 def test_plans_and_key_prefix():
@@ -270,3 +284,225 @@ def test_claim_uses_registry(tmp_path: Path):
         {"id": "desk2", "kind": "desktop", "state": "free"},
     ]
     assert claim_desktop_seats(registry=reg, seats_snapshot=seats, n=1) == ["desk2"]
+
+
+# --- HTTP routes -------------------------------------------------------------
+
+
+def _billing_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_billing")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_billing")
+    monkeypatch.setenv(
+        "BILLING_SUCCESS_URL",
+        "https://ex.example/ok?sid={CHECKOUT_SESSION_ID}",
+    )
+    monkeypatch.setenv("BILLING_CANCEL_URL", "https://ex.example/cancel")
+    monkeypatch.setenv("BILLING_PORTAL_RETURN_URL", "https://ex.example/account")
+    monkeypatch.setenv("STRIPE_PRICE_STARTER", "price_starter")
+    monkeypatch.setenv("STRIPE_PRICE_PRO", "price_pro")
+
+
+@pytest.fixture
+def billing_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _billing_env(monkeypatch)
+    tenants_path = tmp_path / "tenants.json"
+    tenants_path.write_text(json.dumps({"tenants": []}), encoding="utf-8")
+    monkeypatch.setenv("TENANTS_PATH", str(tenants_path))
+
+    import app as app_mod
+    import tenancy as tenancy_mod
+
+    reg = tenancy_mod.TenantRegistry.from_path(tenants_path)
+    monkeypatch.setattr(app_mod, "tenants", reg)
+    monkeypatch.setattr(app_mod, "API_TOKEN", "ops-token")
+    monkeypatch.setattr(
+        app_mod, "recordings", RecordingStore(tmp_path / "rec", ttl_sec=3600)
+    )
+
+    fake = SessionPool(
+        [
+            WorkerSpec(
+                id="desk1",
+                kind="desktop",
+                url="http://worker-1:8000",
+                vnc_url="http://localhost:6081/vnc.html",
+            ),
+            WorkerSpec(
+                id="desk2",
+                kind="desktop",
+                url="http://worker-2:8000",
+                vnc_url="http://localhost:6082/vnc.html",
+            ),
+        ],
+        default_ttl_sec=600,
+        parked_ttl_sec=1800,
+    )
+    monkeypatch.setattr(app_mod, "pool", fake)
+    return TestClient(app_mod.app), reg, tenants_path
+
+
+def test_billing_plans_and_checkout_disabled(billing_client, monkeypatch):
+    tc, _reg, _path = billing_client
+    plans = tc.get("/v1/billing/plans")
+    assert plans.status_code == 200
+    ids = {p["id"] for p in plans.json()["plans"]}
+    assert ids == {"starter", "pro"}
+    assert all(p["price_configured"] for p in plans.json()["plans"])
+
+    monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
+    r = tc.post(
+        "/v1/billing/checkout",
+        json={"email": "a@example.com", "plan": "starter"},
+    )
+    assert r.status_code == 404
+
+
+def test_billing_checkout_creates_session(billing_client):
+    tc, _reg, _path = billing_client
+
+    mock_stripe = MagicMock()
+    mock_stripe.create_checkout_session.return_value = {
+        "id": "cs_route_1",
+        "url": "https://checkout.stripe.com/c/pay/cs_route_1",
+    }
+    mock_stripe.close = MagicMock()
+
+    with patch("app.StripeClient", return_value=mock_stripe):
+        r = tc.post(
+            "/v1/billing/checkout",
+            json={"email": "a@example.com", "plan": "starter"},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["checkout_session_id"] == "cs_route_1"
+    assert "checkout.stripe.com" in body["url"]
+    mock_stripe.create_checkout_session.assert_called_once()
+
+
+def test_billing_webhook_and_reveal_and_portal(billing_client):
+    tc, reg, path = billing_client
+    secret = "whsec_billing"
+
+    session_obj = {
+        "id": "cs_wh_1",
+        "status": "complete",
+        "customer": "cus_route",
+        "subscription": "sub_route",
+        "customer_email": "route@example.com",
+        "metadata": {"plan": "starter"},
+    }
+    event = {
+        "type": "checkout.session.completed",
+        "data": {"object": session_obj},
+    }
+    payload = json.dumps(event).encode()
+    sig = _sign(payload, secret)
+
+    bad = tc.post(
+        "/v1/billing/webhook",
+        content=payload,
+        headers={"Stripe-Signature": "t=1,v1=nope"},
+    )
+    assert bad.status_code == 400
+
+    ok = tc.post(
+        "/v1/billing/webhook",
+        content=payload,
+        headers={"Stripe-Signature": sig},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["tenant_id"] == "cus_route"
+    tenant = reg.get_by_stripe_customer("cus_route")
+    assert tenant is not None
+    assert tenant.seat_ids == frozenset({"desk1"})
+    api_key = next(iter(tenant.api_keys))
+
+    # Tenant can lease only their seat
+    auth = {"Authorization": f"Bearer {api_key}"}
+    seats = tc.get("/v1/seats", headers=auth)
+    assert seats.status_code == 200
+    assert [s["id"] for s in seats.json()["seats"]] == ["desk1"]
+
+    # Reveal once
+    mock_stripe = MagicMock()
+    mock_stripe.retrieve_checkout_session.return_value = session_obj
+    mock_stripe.create_portal_session.return_value = {
+        "url": "https://billing.stripe.com/session/bp_route"
+    }
+    mock_stripe.close = MagicMock()
+    with patch("app.StripeClient", return_value=mock_stripe):
+        first = tc.get("/v1/billing/checkout/cs_wh_1")
+        assert first.status_code == 200, first.text
+        assert first.json()["api_key"] == api_key
+        assert first.json()["revealed"] is False
+
+        second = tc.get("/v1/billing/checkout/cs_wh_1")
+        assert second.status_code == 200
+        assert second.json()["api_key"] is None
+        assert second.json()["revealed"] is True
+
+        portal = tc.post("/v1/billing/portal", headers=auth)
+        assert portal.status_code == 200
+        assert "billing.stripe.com" in portal.json()["url"]
+
+    # Portal rejects missing/ops
+    assert tc.post("/v1/billing/portal").status_code == 401
+    ops = tc.post(
+        "/v1/billing/portal",
+        headers={"Authorization": "Bearer ops-token"},
+    )
+    assert ops.status_code == 400
+
+    # Persist on disk
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    assert disk["tenants"][0]["stripe_customer_id"] == "cus_route"
+    assert disk["tenants"][0]["api_key_revealed_at"]
+
+
+def test_billing_webhook_undersupply_500(billing_client):
+    tc, reg, _path = billing_client
+    # Claim both seats via first customer
+    payload1 = json.dumps(
+        {
+            "type": "checkout.session.completed",
+            "data": {
+                "object": {
+                    "id": "cs_a",
+                    "customer": "cus_a",
+                    "subscription": "sub_a",
+                    "customer_email": "a@example.com",
+                    "metadata": {"plan": "pro"},
+                }
+            },
+        }
+    ).encode()
+    secret = "whsec_billing"
+    r1 = tc.post(
+        "/v1/billing/webhook",
+        content=payload1,
+        headers={"Stripe-Signature": _sign(payload1, secret)},
+    )
+    assert r1.status_code == 200
+    assert reg.claimed_seat_ids() == {"desk1", "desk2"}
+
+    payload2 = json.dumps(
+        {
+            "type": "checkout.session.completed",
+            "data": {
+                "object": {
+                    "id": "cs_b",
+                    "customer": "cus_b",
+                    "subscription": "sub_b",
+                    "customer_email": "b@example.com",
+                    "metadata": {"plan": "starter"},
+                }
+            },
+        }
+    ).encode()
+    r2 = tc.post(
+        "/v1/billing/webhook",
+        content=payload2,
+        headers={"Stripe-Signature": _sign(payload2, secret)},
+    )
+    assert r2.status_code == 500
+    assert reg.get_by_stripe_customer("cus_b") is None
