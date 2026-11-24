@@ -506,3 +506,136 @@ def test_billing_webhook_undersupply_500(billing_client):
     )
     assert r2.status_code == 500
     assert reg.get_by_stripe_customer("cus_b") is None
+
+
+def test_billing_checkout_bad_plan_and_reveal_before_provision(billing_client):
+    tc, _reg, _path = billing_client
+    bad = tc.post(
+        "/v1/billing/checkout",
+        json={"email": "a@example.com", "plan": "enterprise"},
+    )
+    assert bad.status_code == 400
+
+    mock_stripe = MagicMock()
+    mock_stripe.retrieve_checkout_session.return_value = {
+        "id": "cs_early",
+        "status": "complete",
+        "customer": "cus_missing",
+        "metadata": {"plan": "starter"},
+    }
+    mock_stripe.close = MagicMock()
+    with patch("app.StripeClient", return_value=mock_stripe):
+        early = tc.get("/v1/billing/checkout/cs_early")
+    assert early.status_code == 404
+
+
+def test_billing_webhook_resize_and_suspend(billing_client):
+    tc, reg, _path = billing_client
+    secret = "whsec_billing"
+
+    provision = json.dumps(
+        {
+            "type": "checkout.session.completed",
+            "data": {
+                "object": {
+                    "id": "cs_rs",
+                    "customer": "cus_rs",
+                    "subscription": "sub_rs",
+                    "customer_email": "rs@example.com",
+                    "metadata": {"plan": "starter"},
+                }
+            },
+        }
+    ).encode()
+    assert (
+        tc.post(
+            "/v1/billing/webhook",
+            content=provision,
+            headers={"Stripe-Signature": _sign(provision, secret)},
+        ).status_code
+        == 200
+    )
+    assert reg.get("cus_rs") is not None
+    assert reg.get("cus_rs").seat_ids == frozenset({"desk1"})
+    api_key = next(iter(reg.get("cus_rs").api_keys))
+
+    resize = json.dumps(
+        {
+            "type": "customer.subscription.updated",
+            "data": {
+                "object": {
+                    "id": "sub_rs",
+                    "customer": "cus_rs",
+                    "status": "active",
+                    "metadata": {"plan": "pro"},
+                }
+            },
+        }
+    ).encode()
+    r = tc.post(
+        "/v1/billing/webhook",
+        content=resize,
+        headers={"Stripe-Signature": _sign(resize, secret)},
+    )
+    assert r.status_code == 200, r.text
+    assert reg.get("cus_rs").seat_ids == frozenset({"desk1", "desk2"})
+    assert reg.get("cus_rs").plan == "pro"
+    assert reg.get("cus_rs").max_concurrent_leases == 2
+
+    deleted = json.dumps(
+        {
+            "type": "customer.subscription.deleted",
+            "data": {
+                "object": {
+                    "id": "sub_rs",
+                    "customer": "cus_rs",
+                    "status": "canceled",
+                }
+            },
+        }
+    ).encode()
+    d = tc.post(
+        "/v1/billing/webhook",
+        content=deleted,
+        headers={"Stripe-Signature": _sign(deleted, secret)},
+    )
+    assert d.status_code == 200
+    suspended = reg.get("cus_rs")
+    assert suspended is not None
+    assert not suspended.api_keys and not suspended.seat_ids
+    assert suspended.stripe_customer_id == "cus_rs"
+    assert reg.authenticate_key(api_key) is None
+    assert (
+        tc.get("/v1/seats", headers={"Authorization": f"Bearer {api_key}"}).status_code
+        == 401
+    )
+
+
+def test_billing_requires_tenancy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Billing config alone is not enough — TENANTS_PATH / registry required."""
+    _billing_env(monkeypatch)
+    monkeypatch.delenv("TENANTS_PATH", raising=False)
+
+    import app as app_mod
+
+    monkeypatch.setattr(app_mod, "tenants", None)
+    monkeypatch.setattr(app_mod, "API_TOKEN", "ops-token")
+    monkeypatch.setattr(
+        app_mod, "recordings", RecordingStore(tmp_path / "rec", ttl_sec=3600)
+    )
+    tc = TestClient(app_mod.app)
+
+    mock_stripe = MagicMock()
+    mock_stripe.create_checkout_session.return_value = {
+        "id": "cs_x",
+        "url": "https://checkout.stripe.com/c/pay/cs_x",
+    }
+    mock_stripe.close = MagicMock()
+    with patch("app.StripeClient", return_value=mock_stripe):
+        r = tc.post(
+            "/v1/billing/checkout",
+            json={"email": "a@example.com", "plan": "starter"},
+        )
+    assert r.status_code == 503
+    # Stripe should not be called when tenancy is missing
+    mock_stripe.create_checkout_session.assert_not_called()

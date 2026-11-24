@@ -38,6 +38,7 @@ jobs:
             test_recording.py \
             test_recording_api.py \
             test_tenancy.py \
+            test_billing.py \
             providers/test_phone_harness.py \
             -q
 
