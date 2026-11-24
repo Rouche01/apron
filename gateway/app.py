@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
+import abuse as abuse_mod
 import billing as billing_mod
 import physical_phone_seats
 import providers  # noqa: F401 — registers CloudPhoneProvider impls (phone-harness, …)
@@ -181,6 +182,15 @@ def require_tenant(
         if token:
             ctx = tenants.authenticate_key(token)
             if ctx is not None:
+                if ctx.disabled or abuse_mod.is_tenant_denied(ctx.id):
+                    raise HTTPException(
+                        status_code=403,
+                        detail={
+                            "error": "tenant disabled",
+                            "code": "tenant_disabled",
+                            "tenant_id": ctx.id,
+                        },
+                    )
                 return ctx
         raise HTTPException(status_code=401, detail="invalid or missing bearer token")
 

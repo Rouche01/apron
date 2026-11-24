@@ -462,6 +462,7 @@ def provision_from_checkout_session(
             stripe_customer_id=customer_id,
             stripe_subscription_id=subscription_id or existing.stripe_subscription_id,
             api_key_revealed_at=None,
+            disabled=False,  # paid again — clear kill switch
         )
         return registry.upsert_tenant(tenant)
 
@@ -481,6 +482,7 @@ def provision_from_checkout_session(
         stripe_customer_id=customer_id,
         stripe_subscription_id=subscription_id,
         api_key_revealed_at=None,
+        disabled=False,
     )
     saved = registry.upsert_tenant(tenant)
     logger.info(
@@ -506,6 +508,7 @@ def suspend_tenant(registry: TenantRegistry, tenant: Tenant) -> Tenant:
         stripe_customer_id=tenant.stripe_customer_id,
         stripe_subscription_id=tenant.stripe_subscription_id,
         api_key_revealed_at=tenant.api_key_revealed_at,
+        disabled=True,
     )
     return registry.upsert_tenant(suspended)
 
@@ -533,6 +536,7 @@ def resize_tenant_plan(
             stripe_customer_id=tenant.stripe_customer_id,
             stripe_subscription_id=tenant.stripe_subscription_id,
             api_key_revealed_at=tenant.api_key_revealed_at,
+            disabled=tenant.disabled,
         )
         return registry.upsert_tenant(updated)
 
@@ -550,6 +554,7 @@ def resize_tenant_plan(
             stripe_customer_id=tenant.stripe_customer_id,
             stripe_subscription_id=tenant.stripe_subscription_id,
             api_key_revealed_at=tenant.api_key_revealed_at,
+            disabled=tenant.disabled,
         )
         return registry.upsert_tenant(updated)
 
@@ -571,6 +576,7 @@ def resize_tenant_plan(
         stripe_customer_id=tenant.stripe_customer_id,
         stripe_subscription_id=tenant.stripe_subscription_id,
         api_key_revealed_at=tenant.api_key_revealed_at,
+        disabled=tenant.disabled,
     )
     return registry.upsert_tenant(updated)
 
@@ -590,6 +596,7 @@ def mark_api_key_revealed(registry: TenantRegistry, tenant: Tenant) -> Tenant:
         stripe_customer_id=tenant.stripe_customer_id,
         stripe_subscription_id=tenant.stripe_subscription_id,
         api_key_revealed_at=_utcnow_iso(),
+        disabled=tenant.disabled,
     )
     return registry.upsert_tenant(updated)
 

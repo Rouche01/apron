@@ -190,6 +190,44 @@ def test_upsert_reload_atomic(tmp_path: Path):
     assert reg.get_by_stripe_customer("cus_1") is not None
 
 
+def test_disabled_field_round_trip(tmp_path: Path):
+    path = tmp_path / "tenants.json"
+    path.write_text(
+        json.dumps(
+            {
+                "tenants": [
+                    {
+                        "id": "acme",
+                        "api_keys": ["key-acme"],
+                        "seat_ids": ["desk1"],
+                        "disabled": True,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    reg = TenantRegistry.from_path(path)
+    t = reg.get("acme")
+    assert t is not None and t.disabled is True
+    ctx = reg.authenticate_key("key-acme")
+    assert ctx is not None and ctx.disabled is True
+
+    reg.upsert_tenant(
+        Tenant(
+            id="acme",
+            api_keys=frozenset({"key-acme"}),
+            seat_ids=frozenset({"desk1"}),
+            max_concurrent_leases=1,
+            max_lease_ttl_sec=None,
+            max_recording_bytes=None,
+            disabled=True,
+        )
+    )
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    assert disk["tenants"][0]["disabled"] is True
+
+
 def test_filter_seats():
     from tenancy import TenantContext
 

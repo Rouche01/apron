@@ -100,3 +100,86 @@ def test_path_helpers():
     assert billing_public_path("/v1/billing/checkout/cs_123")
     assert not billing_public_path("/v1/billing/webhook")
     assert not billing_public_path("/v1/billing/portal")
+
+
+def test_tenant_disabled_403(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """disabled flag and env deny-list → 403; ops Bearer still works."""
+    import json
+    import os
+    from pathlib import Path as P
+
+    from fastapi.testclient import TestClient
+
+    from inventory import WorkerSpec
+    from pool import SessionPool
+    from recording import RecordingStore
+
+    _gw = P(__file__).resolve().parent
+    os.environ.setdefault("WORKER_INVENTORY_PATH", str(_gw / "workers.json"))
+    os.environ.setdefault("REQUIRE_WORKER_INVENTORY", "1")
+
+    tenants_path = tmp_path / "tenants.json"
+    tenants_path.write_text(
+        json.dumps(
+            {
+                "tenants": [
+                    {
+                        "id": "acme",
+                        "api_keys": ["key-acme"],
+                        "seat_ids": ["desk1"],
+                        "disabled": True,
+                    },
+                    {
+                        "id": "beta",
+                        "api_keys": ["key-beta"],
+                        "seat_ids": ["desk2"],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TENANTS_PATH", str(tenants_path))
+    monkeypatch.setenv("ABUSE_DISABLED_TENANT_IDS", "beta")
+
+    import app as app_mod
+    import tenancy as tenancy_mod
+
+    reg = tenancy_mod.TenantRegistry.from_path(tenants_path)
+    monkeypatch.setattr(app_mod, "tenants", reg)
+    monkeypatch.setattr(app_mod, "API_TOKEN", "ops-token")
+    monkeypatch.setattr(
+        app_mod, "recordings", RecordingStore(tmp_path / "rec", ttl_sec=3600)
+    )
+    fake = SessionPool(
+        [
+            WorkerSpec(
+                id="desk1",
+                kind="desktop",
+                url="http://w1:8000",
+                vnc_url="http://v1",
+            ),
+            WorkerSpec(
+                id="desk2",
+                kind="desktop",
+                url="http://w2:8000",
+                vnc_url="http://v2",
+            ),
+        ],
+        default_ttl_sec=600,
+        parked_ttl_sec=1800,
+    )
+    monkeypatch.setattr(app_mod, "pool", fake)
+    tc = TestClient(app_mod.app)
+
+    r = tc.get("/v1/seats", headers={"Authorization": "Bearer key-acme"})
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["code"] == "tenant_disabled"
+
+    r2 = tc.get("/v1/seats", headers={"Authorization": "Bearer key-beta"})
+    assert r2.status_code == 403
+    assert r2.json()["detail"]["code"] == "tenant_disabled"
+
+    ops = tc.get("/v1/seats", headers={"Authorization": "Bearer ops-token"})
+    assert ops.status_code == 200
+    assert {s["id"] for s in ops.json()["seats"]} == {"desk1", "desk2"}

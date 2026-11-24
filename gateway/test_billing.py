@@ -168,6 +168,7 @@ def test_provision_and_suspend(tmp_path: Path):
 
     suspended = suspend_tenant(reg, tenant)
     assert not suspended.api_keys and not suspended.seat_ids
+    assert suspended.disabled is True
     assert suspended.stripe_customer_id == "cus_acme"
     assert reg.claimed_seat_ids() == set()
 
@@ -603,6 +604,7 @@ def test_billing_webhook_resize_and_suspend(billing_client):
     suspended = reg.get("cus_rs")
     assert suspended is not None
     assert not suspended.api_keys and not suspended.seat_ids
+    assert suspended.disabled is True
     assert suspended.stripe_customer_id == "cus_rs"
     assert reg.authenticate_key(api_key) is None
     assert (

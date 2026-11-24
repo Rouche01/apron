@@ -36,6 +36,7 @@ class Tenant:
     stripe_customer_id: str | None = None
     stripe_subscription_id: str | None = None
     api_key_revealed_at: str | None = None  # ISO-8601 when key was shown once
+    disabled: bool = False  # kill switch — auth resolves key then 403
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class TenantContext:
     is_ops: bool = False
     max_concurrent_leases: int | None = None
     max_lease_ttl_sec: int | None = None
+    disabled: bool = False
 
     def may_use_seat(self, seat_id: str) -> bool:
         if self.is_ops or self.seat_ids is None:
@@ -80,6 +82,22 @@ def _opt_str(row: dict[str, Any], key: str) -> str | None:
     if raw is None or raw == "":
         return None
     return str(raw).strip() or None
+
+
+def _opt_bool(row: dict[str, Any], key: str, *, default: bool = False) -> bool:
+    raw = row.get(key)
+    if raw is None or raw == "":
+        return default
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    s = str(raw).strip().lower()
+    if s in ("1", "true", "yes", "on"):
+        return True
+    if s in ("0", "false", "no", "off"):
+        return False
+    return default
 
 
 def _parse_tenant_row(row: dict[str, Any], index: int) -> Tenant:
@@ -156,6 +174,7 @@ def _parse_tenant_row(row: dict[str, Any], index: int) -> Tenant:
         stripe_customer_id=_opt_str(row, "stripe_customer_id"),
         stripe_subscription_id=_opt_str(row, "stripe_subscription_id"),
         api_key_revealed_at=_opt_str(row, "api_key_revealed_at"),
+        disabled=_opt_bool(row, "disabled", default=False),
     )
 
 
@@ -189,6 +208,8 @@ def _tenant_to_row(t: Tenant) -> dict[str, Any]:
         row["stripe_subscription_id"] = t.stripe_subscription_id
     if t.api_key_revealed_at:
         row["api_key_revealed_at"] = t.api_key_revealed_at
+    if t.disabled:
+        row["disabled"] = True
     return row
 
 
@@ -403,6 +424,7 @@ class TenantRegistry:
                 is_ops=False,
                 max_concurrent_leases=t.max_concurrent_leases,
                 max_lease_ttl_sec=t.max_lease_ttl_sec,
+                disabled=bool(t.disabled),
             )
 
     def tenant_ids(self) -> list[str]:
